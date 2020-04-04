@@ -1,0 +1,35 @@
+[package]
+name = "librarian"
+version = "0.1.0"
+authors = ["Julien Tregoat <jules@jules.nyc>"]
+edition = "2018"
+
+[dependencies]
+tokio = {version = "0.2.20", features = ["rt-threaded", "macros", "fs"]}
+sqlx = {version = "0.4.0-beta.1", default-features = false, features = ["runtime-tokio", "sqlite", "chrono", "macros"]}
+dotenv = "0.15.0"
+claxon = "0.4.2"
+futures = "0.3.5"
+chrono = "0.4"
+hound = "3.4.0"
+rtag = "0.3.5"
+log = "0.4.8"
+env_logger = "0.7.1"
+minimp3 = "0.3.5"
+aiff = {git = "https://github.com/julientregoat/aiff-rs.git"}
+# libc = "0.2.68"
+# cpal # audio playback
+
+[dev-dependencies]
+
+[build-dependencies]
+cbindgen = "0.14.2"
+
+[lib]
+# https://github.com/rust-lang/rust/pull/33553
+crate-type = ["cdylib"]
+
+# used with cargo-run-script
+[package.metadata.scripts]
+debug = "RUST_LOG=librarian=debug cargo test -- --nocapture"
+fmt = "cargo +nightly fmt"
