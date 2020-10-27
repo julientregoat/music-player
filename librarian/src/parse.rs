@@ -1,6 +1,6 @@
 use claxon::{FlacReader, FlacReaderOptions};
 use hound::WavReader;
-use log::{error, trace, warn};
+use log::{debug, error, trace, warn};
 use rtag::{
     frame::FrameBody,
     metadata::{MetadataReader, Unit},
@@ -191,6 +191,7 @@ impl ParseResultBuilder {
 }
 
 // should file path be stored in here?
+// TODO fields shouldn't be public
 #[derive(Debug)]
 pub struct ParseResult {
     pub path: PathBuf,
@@ -402,4 +403,24 @@ pub fn parse_mp3(path: PathBuf) -> Option<ParseResult> {
 pub fn parse_aiff(p: PathBuf) -> Option<ParseResult> {
     trace!("skipping aif/f file {:?}", &p);
     None
+}
+
+const FLAC: &'static str = "flac";
+const WAV: &'static str = "wav";
+const MP3: &'static str = "mp3";
+const AIF: &'static str = "aif";
+const AIFF: &'static str = "aiff";
+
+// TODO handle ext casing, normalize?
+pub fn parse_track(path: PathBuf) -> Option<ParseResult> {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(e) if e == FLAC => parse_flac(path),
+        Some(e) if e == WAV => parse_wav(path),
+        Some(e) if e == MP3 => parse_mp3(path),
+        Some(e) if (e == AIF || e == AIFF) => parse_aiff(path),
+        some_ext => {
+            debug!("skipping unsupported file type {:?}", some_ext);
+            None
+        }
+    }
 }

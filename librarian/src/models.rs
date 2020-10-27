@@ -1,9 +1,13 @@
 // use chrono::{DateTime, Utc};
+use super::parse;
 use core::borrow::BorrowMut;
 use sqlx::{pool::PoolConnection, sqlite::Sqlite};
 
 pub type SqlitePoolConn = PoolConnection<Sqlite>;
 // type Timestamptz = DateTime<Utc>; // TODO figure out string conversion
+const PG_UNIQUE_VIOLATION: &'static str = "23505";
+
+// sqlite doesn't have precise integers
 
 // FIXME
 // - handle encoding/decoding string array (for Track#tags)
@@ -77,15 +81,12 @@ pub struct Release {
 }
 
 impl Release {
-    // hacky way to deal issue using mutable reference twice
-    // TODO something better - maybe just don't have this logic in the same
-    // fn, use a different publicly exposed wrapper?
     pub async fn create(
-        conn: SqlitePoolConn,
+        conn: &mut SqlitePoolConn,
         name: &str,
         date: Option<&str>,
         artist_ids: Vec<i64>,
-    ) -> Result<(SqlitePoolConn, Self), sqlx::Error> {
+    ) -> Result<Self, sqlx::Error> {
         let mut conn = conn;
         let release_id = sqlx::query(
             "INSERT INTO releases (name, date)
@@ -97,19 +98,17 @@ impl Release {
         .await?
         .last_insert_rowid();
 
-        let release = sqlx::query_as!(
+        for id in artist_ids {
+            ArtistRelease::create(&mut conn, id, release_id).await?;
+        }
+
+        sqlx::query_as!(
             Self,
             "SELECT * FROM releases WHERE id = ?;",
             release_id
         )
         .fetch_one(conn.borrow_mut())
-        .await?;
-
-        for id in artist_ids {
-            ArtistRelease::create(&mut conn, id, release_id).await?;
-        }
-
-        Ok((conn, release))
+        .await
     }
 
     pub async fn get_by_name(
@@ -217,4 +216,71 @@ impl Track {
             .fetch_one(conn.borrow_mut())
             .await
     }
+}
+
+pub async fn import_from_parse_result(
+    conn: SqlitePoolConn,
+    metadata: parse::ParseResult,
+) -> Track {
+    let mut conn = conn;
+    // TODO execute in parallel - requires conn pool
+    let mut artists = vec![];
+    for curr_artist in metadata.artists {
+        let new_artist = match Artist::create(&mut conn, &curr_artist).await {
+            Ok(a) => a,
+            Err(sqlx::Error::Database(d)) => match d.code() {
+                Some(code) if code == PG_UNIQUE_VIOLATION => {
+                    Artist::get(&mut conn, &curr_artist).await.unwrap()
+                }
+                _ => panic!("new artist failed db {:?}", d),
+            },
+            Err(e) => panic!("new artist failed {:?}", e),
+        };
+        artists.push(new_artist);
+    }
+
+    // check first to prevent duplicate artist release entries since theres no constraint
+    // hacky fix - see models.rs
+    // TODO should this just be wrapped up into the create release fn?
+    let releases = Release::get_artist_releases(&mut conn, artists[0].id)
+        .await
+        .unwrap();
+
+    let album = metadata.album.as_str();
+    let r = match releases.iter().find(|r| r.name == album) {
+        Some(r) => r.clone(), // FIXME avoid clone
+        None => Release::create(
+            &mut conn,
+            album,
+            metadata.date.as_deref(),
+            artists.iter().map(|a| a.id).collect(),
+        )
+        .await
+        .unwrap(),
+    };
+
+    let t = match Track::create(
+        &mut conn,
+        &metadata.track,
+        r.id,
+        metadata.path.to_str().unwrap(), // TODO
+        metadata.channels as i64,
+        metadata.sample_rate as i64,
+        metadata.bit_rate as i64,
+        metadata.track_pos.map(|pos| pos as i64),
+    )
+    .await
+    {
+        Ok(track) => track,
+        Err(sqlx::Error::Database(e)) => match e.code() {
+            Some(code) if code == PG_UNIQUE_VIOLATION => {
+                panic!("track with same data already exists {:?}", e)
+            }
+            Some(code) => panic!("track insert db failure {:?}", code),
+            None => panic!("track insert db fail no code"),
+        },
+        Err(e) => panic!("track insert failed {:?}", e),
+    };
+
+    t
 }
