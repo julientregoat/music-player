@@ -162,11 +162,24 @@ pub struct Library {
     db_pool: SqlitePool
 }
 
+const SQLITE_URL_PROTOCOL: &str = "sqlite:";
+
 impl Library {
-    pub async fn new(db_path: &str) -> Self {
+    pub async fn open_or_create(db_dir: PathBuf) -> Self {
+        let mut db_path = db_dir;
+        db_path.push("librarian.db");
+
+        if !db_path.exists() {
+            debug!("db does not exist; creating at {:?}", db_path);
+            std::fs::File::create(&db_path).expect("failed to create db");
+        }
+
+        let mut db_url = db_path.into_os_string().into_string().expect("unable to coerce db_path pathbuf to String");
+        db_url.insert_str(0, SQLITE_URL_PROTOCOL);
+
         // currently defaults to max 10 conns simultaneously
         let db_pool =
-        Pool::connect(db_path).await.expect("Error opening db pool");
+        Pool::connect(&db_url).await.expect("Error opening db pool");
         info!("connected to db");
 
         // TODO get lib dir, check if exists, create if not
