@@ -1,5 +1,8 @@
 use gio::prelude::*;
-use gtk::{Align, Button, ButtonBox, HeaderBar, HeaderBarBuilder, Orientation, SearchEntryBuilder, prelude::*};
+use gtk::{
+    prelude::*, Align, Button, ButtonBox, HeaderBar, HeaderBarBuilder, Orientation,
+    SearchEntryBuilder,
+};
 
 fn build_music_controls() -> ButtonBox {
     let music_controls = ButtonBox::new(Orientation::Horizontal);

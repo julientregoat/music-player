@@ -6,11 +6,12 @@ extern crate gtk;
 extern crate librarian;
 extern crate log;
 extern crate tokio;
+extern crate tokio_compat_02;
 
-use dotenv::dotenv;
 use gio::prelude::*;
 use gtk::prelude::*;
 use std::env;
+use tokio_compat_02::FutureExt;
 
 mod header;
 mod track_list;
@@ -25,22 +26,19 @@ fn build_ui(application: &gtk::Application) {
 
     let header = header::build_header();
 
-    let (track_list_view, track_list_store) = track_list::build_track_list();
+    let (track_list, track_list_store) = track_list::build_track_list();
 
-    track_list_store.insert_with_values(
-        None,
-        &[0, 1],
-        &[&format!("chicago"), &format!("roy ayers")],
-    );
-    track_list_store.insert_with_values(
-        None,
-        &[0, 1],
-        &[&format!("cavern"), &format!("liquid liquid")],
-    );
+    for _ in 0..100 {
+        track_list_store.insert_with_values(
+            None,
+            &[0, 2],
+            &[&format!("cavern"), &format!("liquid liquid")],
+        );
+    }
 
     let layout = gtk::Box::new(gtk::Orientation::Vertical, 0);
     layout.add(&header);
-    layout.add(&track_list_view);
+    layout.add(&track_list);
 
     window.add(&layout);
     window.show_all();
@@ -65,10 +63,7 @@ fn build_menu_bar(app: &gtk::Application) -> gio::Menu {
 
     let menubar = gio::Menu::new();
     let file_menu = gio::Menu::new();
-    let import_mitem = gio::MenuItem::new(
-        Some("Import"),
-        Some(&format!("app.{}", IMPORT_ACTION)),
-    );
+    let import_mitem = gio::MenuItem::new(Some("Import"), Some(&format!("app.{}", IMPORT_ACTION)));
 
     file_menu.append_item(&import_mitem);
     menubar.append_submenu(Some("File"), &file_menu);
@@ -79,6 +74,14 @@ fn build_menu_bar(app: &gtk::Application) -> gio::Menu {
 // TODO library dir should be stored in db and checked for there first before
 #[tokio::main]
 pub async fn main() {
+    env_logger::init();
+    // dotenv().ok();
+
+    // on error here, prompt user for desired db path
+    let bin_path = std::env::current_exe().unwrap();
+    let db_dir = bin_path.parent().unwrap().to_path_buf();
+    let lib = librarian::Library::open_or_create(db_dir).compat().await;
+
     let application = gtk::ApplicationBuilder::new()
         .application_id("nyc.jules.music-player")
         .flags(Default::default())
@@ -93,15 +96,4 @@ pub async fn main() {
     });
 
     application.run(&env::args().collect::<Vec<_>>());
-
-    // env_logger::init();
-    // dotenv().ok();
-
-    // on error here, prompt user for desired db path
-    // let bin_path = std::env::current_exe().unwrap();
-    // let db_dir = bin_path.parent().unwrap().to_path_buf();
-
-    // let lib = librarian::Library::open_or_create(db_dir).await;
-
-    // librarian::import_dir(&db_pool, target.as_ref(), lib_path);
 }
