@@ -16,5 +16,6 @@ env_logger = "0.8.1"
 dotenv = "0.15.0"
 log = "0.4.8"
 
+
 # needed for sqlx until it updates its tokio dep to 0.3.0
 tokio-compat-02 = "0.1.2"
