@@ -30,7 +30,7 @@ CREATE TABLE tracks (
   bit_rate INTEGER NOT NULL,
   track_num INTEGER NULL,
    -- TODO determine default empty array value or alternate encoding method
-  tags TEXT NOT NULL,
+  tags TEXT NOT NULL DEFAULT '',
   created TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   modified TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   -- UNIQUE(name, release_id) -- maybe

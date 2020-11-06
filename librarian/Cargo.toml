@@ -6,7 +6,7 @@ edition = "2018"
 
 [dependencies]
 tokio = {version = "0.3.2", features = ["fs"]}
-sqlx = {version = "0.4.0-beta.1", default-features = false, features = ["runtime-tokio", "sqlite", "chrono", "macros"]}
+sqlx = {version = "0.4.0-beta.1", default-features = false, features = ["runtime-tokio", "sqlite", "chrono", "macros", "migrate"]}
 claxon = "0.4.2"
 futures = "0.3.5"
 chrono = "0.4"

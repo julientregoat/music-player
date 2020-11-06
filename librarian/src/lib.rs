@@ -109,6 +109,8 @@ pub async fn import_dir(
             // TODO check fs handle limit with `ulimit -n`
             // try to raise? need to figure out how many I can safely acquire
             // TODO handle panics below - need to return future, maybe boxed?
+            // TODO should the copy happen before the import? why not concurrent?
+            // FIXME copy should be removed if db insert fails
             copies.push(
                 async_fs::copy(msg.path.clone(), track_path)
                     .then(|res| match res {
@@ -159,7 +161,7 @@ pub async fn import_dir(
 // TODO store library metadata somewhere. db? user editable config file may be >
 // - current library base path; where files are copied to on import
 pub struct Library {
-    db_pool: SqlitePool
+    pub db_pool: SqlitePool,
 }
 
 const SQLITE_URL_PROTOCOL: &str = "sqlite:";
@@ -174,15 +176,32 @@ impl Library {
             std::fs::File::create(&db_path).expect("failed to create db");
         }
 
-        let mut db_url = db_path.into_os_string().into_string().expect("unable to coerce db_path pathbuf to String");
+        let mut db_url = db_path
+            .into_os_string()
+            .into_string()
+            .expect("unable to coerce db_path pathbuf to String");
         db_url.insert_str(0, SQLITE_URL_PROTOCOL);
 
-        // currently defaults to max 10 conns simultaneously
-        let db_pool =
-        Pool::connect(&db_url).await.expect("Error opening db pool");
+        let db_pool = sqlx::pool::PoolOptions::new()
+        // sqlite can only write at once, so the async calls get blocked
+        // I can temporarily add a timeout which should help importing
+        // FIXME separate reader / writer conns to bypass (sqlx is working on it)
+            .max_connections(1)
+            .connect(&db_url)
+            .await
+            .expect("Error opening db pool");
+
         info!("connected to db");
 
-        // TODO get lib dir, check if exists, create if not
+        // FIXME get migration dir properly
+        let m = sqlx::migrate::Migrator::new(Path::new(
+            "/Users/jtregoat/Code/music-player/librarian/migrations",
+        ))
+        .await
+        .unwrap();
+        m.run(&db_pool).await.unwrap();
+
+        // TODO determine where libdir should be - same as db?
         // let lib_path: PathBuf = library.into();
         // if !lib_path.exists() {
         //     debug!("library doesn't exist, creating at {:?}", lib_path);
