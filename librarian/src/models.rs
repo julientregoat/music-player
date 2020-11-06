@@ -2,6 +2,8 @@
 use super::parse;
 use core::borrow::BorrowMut;
 use sqlx::{pool::PoolConnection, sqlite::Sqlite};
+use std::collections::HashMap;
+use std::rc::Rc;
 
 pub type SqlitePoolConn = PoolConnection<Sqlite>;
 // type Timestamptz = DateTime<Utc>; // TODO figure out string conversion
@@ -189,6 +191,8 @@ pub struct Track {
 pub struct DetailedTrack {
     pub id: i64,
     pub name: String,
+    // is RC worth it here? we have to clone release + artist names
+    // for the UI either way.
     pub release: Release,
     pub artists: Vec<Artist>,
     pub file_path: String,
@@ -276,7 +280,7 @@ impl Track {
         .fetch_all(conn.borrow_mut())
         .await?;
 
-        let mut release_artists = std::collections::HashMap::new();
+        let mut release_artists = HashMap::new();
         // put into a map of release_id -> Vec<Artist>
         sqlx::query!(
             "SELECT
@@ -291,9 +295,9 @@ impl Track {
         .await?
         .iter()
         .for_each(|row| {
-            let artists =
+            let ra =
                 release_artists.entry(row.release_id).or_insert(Vec::new());
-            artists.push(Artist {
+            ra.push(Artist {
                 id: row.id,
                 name: row.name.clone(),
                 created: row.created.clone(),

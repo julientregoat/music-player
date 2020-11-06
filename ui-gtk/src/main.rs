@@ -11,12 +11,13 @@ extern crate tokio_compat_02;
 use gio::prelude::*;
 use gtk::prelude::*;
 use std::env;
+use std::sync::mpsc;
 use tokio_compat_02::FutureExt;
 
 mod header;
 mod track_list;
 
-fn build_ui(application: &gtk::Application) {
+fn build_ui(application: &gtk::Application) -> App {
     let window = gtk::ApplicationWindow::new(application);
 
     window.set_title("music player");
@@ -42,6 +43,10 @@ fn build_ui(application: &gtk::Application) {
 
     window.add(&layout);
     window.show_all();
+
+    App {
+        tracklist: track_list_store,
+    }
 }
 
 const IMPORT_ACTION: &'static str = "import";
@@ -71,6 +76,32 @@ fn build_menu_bar(app: &gtk::Application) -> gio::Menu {
     menubar
 }
 
+// TODO better names
+struct App {
+    tracklist: gtk::ListStore,
+}
+
+enum AppEvent {
+    Tracklist(Vec<librarian::models::DetailedTrack>),
+}
+
+enum LibraryCommand {
+    RefreshTracklist,
+}
+
+fn event_loop(app: App, chan: &mpsc::Receiver<AppEvent>) {
+    while let Ok(msg) = chan.recv() {
+        match msg {
+            AppEvent::Tracklist(tracks) => {
+                app.tracklist.clear();
+                for track in tracks {
+                    track_list::insert_track(&app.tracklist, track)
+                }
+            }
+        }
+    }
+}
+
 // TODO library dir should be stored in db and checked for there first before
 #[tokio::main]
 pub async fn main() {
@@ -81,6 +112,17 @@ pub async fn main() {
     let bin_path = std::env::current_exe().unwrap();
     let db_dir = bin_path.parent().unwrap().to_path_buf();
     let lib = librarian::Library::open_or_create(db_dir).compat().await;
+    // librarian::import_dir(
+    //     &lib.db_pool,
+    //     std::path::Path::new("/Users/jtregoat/Code/music-player/"),
+    //     std::path::Path::new("/Users/jtregoat/Downloads/transmission").to_path_buf(),
+    // )
+    // .compat()
+    // .await;
+
+    // for row in result {
+    //     println!("detailed result {:?}", row);
+    // }
 
     let application = gtk::ApplicationBuilder::new()
         .application_id("nyc.jules.music-player")
@@ -90,9 +132,22 @@ pub async fn main() {
 
     let menubar = build_menu_bar(&application);
 
+    let (tx, rx) = mpsc::channel();
+
     application.connect_activate(move |app| {
         app.set_menubar(Some(&menubar));
-        build_ui(app);
+        let a = build_ui(app);
+        event_loop(a, &rx)
+    });
+
+    tokio::spawn(async move {
+        let mut conn = lib.db_pool.acquire().compat().await.unwrap();
+        let result = librarian::models::Track::get_all_detailed(&mut conn)
+            .compat()
+            .await
+            .unwrap();
+
+        tx.send(AppEvent::Tracklist(result)).unwrap();
     });
 
     application.run(&env::args().collect::<Vec<_>>());
