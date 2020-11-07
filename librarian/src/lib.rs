@@ -24,6 +24,7 @@ use std::{
     sync::mpsc,
 };
 use tokio::fs as async_fs;
+use tokio::sync::mpsc as tokio_mpsc;
 
 pub mod models;
 pub mod parse;
@@ -39,7 +40,7 @@ pub mod parse;
 
 // pub fn parse_dir<P: AsRef<Path>>(
 pub fn parse_dir(
-    tx: &mpsc::Sender<parse::ParseResult>,
+    tx: &tokio_mpsc::UnboundedSender<parse::ParseResult>,
     path: &Path,
 ) -> std::io::Result<()> {
     for entry_result in fs::read_dir(path).unwrap() {
@@ -69,7 +70,7 @@ pub async fn import_dir(
     import_from: PathBuf,
 ) -> Vec<models::Track> {
     // TODO try out sync channel buffered to ulimit -n
-    let (tx, rx) = std::sync::mpsc::channel();
+    let (tx, mut rx) = tokio_mpsc::unbounded_channel();
     let import_thread = std::thread::spawn(move || {
         debug!("importing dir {:?}", import_from);
         parse_dir(&tx, import_from.as_ref()).unwrap()
@@ -79,7 +80,7 @@ pub async fn import_dir(
     let mut copies = Vec::with_capacity(fs_handle_limit);
     let mut idx = 0;
     let mut imported_tracks = Vec::new();
-    while let Ok(msg) = rx.recv() {
+    while let Some(msg) = rx.recv().await {
         debug!("copying idx {} {:?}", idx, msg);
         // TODO need to change ParseResult.path if copied
         // should this happen before it's saved? or becomes pathbuf either way
