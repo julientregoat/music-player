@@ -36,9 +36,10 @@ pub fn build_track_list() -> (ScrolledWindow, ListStore) {
 
     let view = TreeViewBuilder::new()
         .enable_grid_lines(TreeViewGridLines::Both)
-        // .fixed_height_mode(true) // improves performance?
-        // .enable_search(true)
+        // .fixed_height_mode(true) // improves performance? set sizing needed
         .headers_visible(true)
+        .headers_clickable(true)
+        .rubber_banding(true)
         // .reorderable(true)
         .model(&list)
         .build();
@@ -71,7 +72,7 @@ pub fn insert_track(list: &ListStore, track: librarian::models::DetailedTrack) {
             &track
                 .artists
                 .into_iter()
-                .map(|a| a.name.clone())
+                .map(|a| a.name)
                 .collect::<Vec<_>>()
                 .join(", "),
             &track.release.name,
