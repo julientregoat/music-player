@@ -13,7 +13,10 @@ extern crate sqlx;
 use chrono::Local;
 use futures::future::{self, FutureExt};
 use log::{debug, error, info, trace};
-use sqlx::{sqlite::SqlitePool, Pool};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqlitePool},
+    Pool,
+};
 use std::env::args;
 use std::{
     env, fs,
@@ -164,8 +167,6 @@ pub struct Library {
     pub db_pool: SqlitePool,
 }
 
-const SQLITE_URL_PROTOCOL: &str = "sqlite:";
-
 impl Library {
     pub async fn open_or_create(db_dir: PathBuf) -> Self {
         let mut db_path = db_dir;
@@ -176,18 +177,16 @@ impl Library {
             std::fs::File::create(&db_path).expect("failed to create db");
         }
 
-        let mut db_url = db_path
-            .into_os_string()
-            .into_string()
-            .expect("unable to coerce db_path pathbuf to String");
-        db_url.insert_str(0, SQLITE_URL_PROTOCOL);
+        let conn_opts = SqliteConnectOptions::new()
+            .foreign_keys(true)
+            .filename(&db_path);
 
         let db_pool = sqlx::pool::PoolOptions::new()
-        // sqlite can only write at once, so the async calls get blocked
-        // I can temporarily add a timeout which should help importing
-        // FIXME separate reader / writer conns to bypass (sqlx is working on it)
+            // sqlite can only write at once, so the async calls get blocked
+            // I can temporarily add a timeout which should help importing
+            // FIXME separate reader / writer conns to bypass (sqlx is working on it)
             .max_connections(1)
-            .connect(&db_url)
+            .connect_with(conn_opts)
             .await
             .expect("Error opening db pool");
 
