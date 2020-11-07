@@ -16,6 +16,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio_compat_02::FutureExt;
 
+mod events;
 mod header;
 mod track_list;
 
@@ -43,10 +44,14 @@ fn build_ui(application: &gtk::Application) -> gtk::ListStore {
 
 const IMPORT_ACTION: &'static str = "import";
 
-fn build_menu_bar(app: &gtk::Application) -> gio::Menu {
+fn build_menu_bar(
+    app: &gtk::Application,
+    lib_chan: tokio_mpsc::UnboundedSender<events::LibraryMsg>,
+) -> gio::Menu {
     // should the creation and registration of actions be separate?
+    // not a fan of the nested closures. seems necessary for menu bar tho?
     let import_action = gio::SimpleAction::new(IMPORT_ACTION, None);
-    import_action.connect_activate(|_a, _v| {
+    import_action.connect_activate(move |_a, _v| {
         let chooser = gtk::FileChooserNativeBuilder::new()
             .title("title")
             .accept_label("import")
@@ -54,11 +59,15 @@ fn build_menu_bar(app: &gtk::Application) -> gio::Menu {
             .action(gtk::FileChooserAction::SelectFolder)
             .build();
 
-        chooser.connect_response(|chooser, resp_type| {
+        let lib_chan_2 = lib_chan.clone();
+        chooser.connect_response(move |chooser, resp_type| {
             if resp_type == gtk::ResponseType::Accept {
                 match chooser.get_filename() {
                     Some(import_dir) => {
                         info!("importing {:?}", &import_dir);
+                        lib_chan_2
+                            .send(events::LibraryMsg::ImportDir(import_dir))
+                            .unwrap();
                     }
                     None => error!("couldn't get filename for import dir"),
                 }
@@ -81,41 +90,11 @@ fn build_menu_bar(app: &gtk::Application) -> gio::Menu {
 
 // TODO better names
 #[derive(Debug)]
-struct AppState {
+pub struct AppState {
     tracklist: Option<gtk::ListStore>,
 }
-#[derive(Debug)]
-enum AppMsg {
-    Init,
-    Tracklist(Vec<librarian::models::DetailedTrack>),
-}
 
-#[derive(Debug)]
-enum LibraryMsg {
-    RefreshTracklist,
-}
-
-async fn event_loop(
-    app: Arc<Mutex<AppState>>,
-    rx_app: mpsc::Receiver<AppMsg>,
-    tx_lib: tokio_mpsc::UnboundedSender<LibraryMsg>,
-) {
-    tx_lib
-        .send(LibraryMsg::RefreshTracklist)
-        .expect("Initial tracklist load failed.");
-    while let Ok(msg) = rx_app.recv() {
-        match msg {
-            AppMsg::Tracklist(tracks) => {
-                debug!("tracks {:?}", &tracks);
-                app.tracklist.clear();
-                for track in tracks {
-                    track_list::insert_track(&app.tracklist, track)
-                }
-            }
-            AppMsg::Init => error!("received random init message"),
-        }
-    }
-}
+type AppStore = Arc<Mutex<AppState>>;
 
 use glib::MainContext;
 
@@ -130,18 +109,25 @@ pub async fn main() {
     let db_dir = bin_path.parent().unwrap().to_path_buf();
     let lib = librarian::Library::open_or_create(db_dir).compat().await;
 
+    let app_state = Arc::new(Mutex::new(AppState { tracklist: None }));
+
+    let main_ctx = MainContext::default();
+    if main_ctx.acquire() == false {
+        panic!("failed to acquire main context");
+    }
+
+    let (tx_app, rx_app) = MainContext::channel(glib::PRIORITY_DEFAULT);
+    let (tx_lib, rx_lib) = tokio_mpsc::unbounded_channel();
+
+    rx_app.attach(Some(&main_ctx), events::app_event_loop(app_state.clone()));
+    tokio::spawn(events::librarian_event_loop(lib, rx_lib, tx_app.clone()));
+
     let application = gtk::ApplicationBuilder::new()
         .application_id("nyc.jules.music-player")
         .flags(Default::default())
         .register_session(true)
         .build();
-
-    let menubar = build_menu_bar(&application);
-
-    let (tx_lib, mut rx_lib) = tokio_mpsc::unbounded_channel();
-
-    // TODO still need arc mutex?
-    let app_state = Arc::new(Mutex::new(AppState { tracklist: None }));
+    let menubar = build_menu_bar(&application, tx_lib.clone());
 
     let tx_lib_2 = tx_lib.clone();
     let app_state_2 = app_state.clone();
@@ -150,53 +136,8 @@ pub async fn main() {
         let tracklist = build_ui(app);
 
         app_state_2.lock().unwrap().tracklist = Some(tracklist);
-        tx_lib_2.send(LibraryMsg::RefreshTracklist).unwrap();
+        tx_lib_2.send(events::LibraryMsg::RefreshTracklist).unwrap();
     });
-
-    let main_ctx = MainContext::default();
-    main_ctx.acquire();
-    let app_state_3 = app_state.clone();
-    let (tx_app, rx_app) = MainContext::channel(glib::PRIORITY_DEFAULT);
-
-    // refactor into event loop fn
-    rx_app.attach(Some(&main_ctx), move |msg| {
-        match msg {
-            // maybe on init refresh track? or just have a refresh track msgh
-            AppMsg::Tracklist(tracks) => {
-                if let Some(tracklist) = &app_state_3.lock().unwrap().tracklist {
-                    debug!("tracks {:?}", &tracks);
-                    tracklist.clear();
-                    for track in tracks {
-                        track_list::insert_track(tracklist, track);
-                    }
-                } else {
-                    error!("recieved tracks before app was available")
-                }
-            }
-            AppMsg::Init => error!("received random init message"),
-        };
-
-        glib::Continue(true)
-    });
-
-    tokio::spawn(async move {
-        while let Some(msg) = rx_lib.recv().await {
-            match msg {
-                LibraryMsg::RefreshTracklist => {
-                    let mut conn = lib.db_pool.acquire().compat().await.unwrap();
-                    let result = librarian::models::Track::get_all_detailed(&mut conn)
-                        .compat()
-                        .await
-                        .unwrap();
-                    {
-                        tx_app.send(AppMsg::Tracklist(result)).unwrap();
-                    }
-                }
-            }
-        }
-    });
-
-    // event_loop(app_state, rx_app, tx_lib)
 
     let args: Vec<_> = env::args().collect();
     application.run(&args);
