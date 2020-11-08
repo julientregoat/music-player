@@ -64,11 +64,12 @@ pub fn parse_dir(
     Ok(())
 }
 
+// FIXME why does tokio spawn require this fn to use tokio async chans?
 pub async fn import_dir(
     pool: &SqlitePool,
     import_to: &Path,
     import_from: PathBuf,
-) -> Vec<models::Track> {
+) -> Vec<models::DetailedTrack> {
     // TODO try out sync channel buffered to ulimit -n
     let (tx, mut rx) = tokio_mpsc::unbounded_channel();
     let import_thread = std::thread::spawn(move || {

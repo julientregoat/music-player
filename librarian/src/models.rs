@@ -339,7 +339,7 @@ impl Track {
 pub async fn import_from_parse_result(
     conn: SqlitePoolConn,
     metadata: parse::ParseResult,
-) -> Track {
+) -> DetailedTrack {
     let mut conn = conn;
     let mut artists = vec![];
     for curr_artist in metadata.artists {
@@ -356,15 +356,15 @@ pub async fn import_from_parse_result(
         artists.push(new_artist);
     }
 
-    // check first to prevent duplicate artist release entries since theres no constraint
-    // hacky fix - see models.rs
+    // FIXME - is this really the case? there is a primary key constraint, verify
+    // this is done to prevent duplicate entries
     // TODO should this just be wrapped up into the create release fn?
     let releases = Release::get_artist_releases(&mut conn, artists[0].id)
         .await
         .unwrap();
 
     let album = metadata.album.as_str();
-    let r = match releases.iter().find(|r| r.name == album) {
+    let release = match releases.iter().find(|r| r.name == album) {
         Some(r) => r.clone(), // FIXME avoid clone
         None => Release::create(
             &mut conn,
@@ -379,7 +379,7 @@ pub async fn import_from_parse_result(
     let track_id = match Track::create(
         &mut conn,
         &metadata.track,
-        r.id,
+        release.id,
         metadata.path.to_str().unwrap(), // TODO
         metadata.channels as i64,
         metadata.sample_rate as i64,
@@ -400,7 +400,22 @@ pub async fn import_from_parse_result(
     };
 
     // FIXME don't need to return this
-    Track::get(&mut conn, track_id)
+    let t = Track::get(&mut conn, track_id)
         .await
-        .expect("Failed to get track after insert")
+        .expect("Failed to get track after insert");
+
+    DetailedTrack {
+        id: t.id,
+        name: t.name,
+        release,
+        artists,
+        file_path: t.file_path,
+        channels: t.channels,
+        sample_rate: t.sample_rate,
+        bit_rate: t.bit_rate,
+        track_num: t.track_num,
+        tags: t.tags,
+        created: t.created,
+        modified: t.modified,
+    }
 }
