@@ -5,8 +5,8 @@ authors = ["Julien Tregoat <jules@jules.nyc>"]
 edition = "2018"
 
 [dependencies]
-tokio = {version = "0.2.20", features = ["fs"]}
-sqlx = {version = "0.4.0-beta.1", default-features = false, features = ["runtime-tokio", "sqlite", "chrono", "macros"]}
+tokio = {version = "0.3.3", features = ["fs", "sync"]}
+sqlx = {version = "0.4.0-beta.1", default-features = false, features = ["runtime-tokio", "sqlite", "chrono", "macros", "migrate"]}
 claxon = "0.4.2"
 futures = "0.3.5"
 chrono = "0.4"
@@ -18,12 +18,3 @@ aiff = {git = "https://github.com/julientregoat/aiff-rs.git"}
 # cpal # audio playback
 
 [dev-dependencies]
-
-# [lib]
-# https://github.com/rust-lang/rust/pull/33553
-# crate-type = ["cdylib"]
-
-# used with cargo-run-script
-[package.metadata.scripts]
-# debug = "RUST_LOG=librarian=debug cargo test -- --nocapture"
-fmt = "cargo +nightly fmt"

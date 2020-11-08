@@ -13,7 +13,10 @@ extern crate sqlx;
 use chrono::Local;
 use futures::future::{self, FutureExt};
 use log::{debug, error, info, trace};
-use sqlx::{sqlite::SqlitePool, Pool};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqlitePool},
+    Pool,
+};
 use std::env::args;
 use std::{
     env, fs,
@@ -21,6 +24,7 @@ use std::{
     sync::mpsc,
 };
 use tokio::fs as async_fs;
+use tokio::sync::mpsc as tokio_mpsc;
 
 pub mod models;
 pub mod parse;
@@ -36,7 +40,7 @@ pub mod parse;
 
 // pub fn parse_dir<P: AsRef<Path>>(
 pub fn parse_dir(
-    tx: &mpsc::Sender<parse::ParseResult>,
+    tx: &tokio_mpsc::UnboundedSender<parse::ParseResult>,
     path: &Path,
 ) -> std::io::Result<()> {
     for entry_result in fs::read_dir(path).unwrap() {
@@ -60,13 +64,14 @@ pub fn parse_dir(
     Ok(())
 }
 
+// FIXME why does tokio spawn require this fn to use tokio async chans?
 pub async fn import_dir(
     pool: &SqlitePool,
     import_to: &Path,
     import_from: PathBuf,
-) -> Vec<models::Track> {
+) -> Vec<models::DetailedTrack> {
     // TODO try out sync channel buffered to ulimit -n
-    let (tx, rx) = std::sync::mpsc::channel();
+    let (tx, mut rx) = tokio_mpsc::unbounded_channel();
     let import_thread = std::thread::spawn(move || {
         debug!("importing dir {:?}", import_from);
         parse_dir(&tx, import_from.as_ref()).unwrap()
@@ -76,7 +81,7 @@ pub async fn import_dir(
     let mut copies = Vec::with_capacity(fs_handle_limit);
     let mut idx = 0;
     let mut imported_tracks = Vec::new();
-    while let Ok(msg) = rx.recv() {
+    while let Some(msg) = rx.recv().await {
         debug!("copying idx {} {:?}", idx, msg);
         // TODO need to change ParseResult.path if copied
         // should this happen before it's saved? or becomes pathbuf either way
@@ -109,6 +114,8 @@ pub async fn import_dir(
             // TODO check fs handle limit with `ulimit -n`
             // try to raise? need to figure out how many I can safely acquire
             // TODO handle panics below - need to return future, maybe boxed?
+            // TODO should the copy happen before the import? why not concurrent?
+            // FIXME copy should be removed if db insert fails
             copies.push(
                 async_fs::copy(msg.path.clone(), track_path)
                     .then(|res| match res {
@@ -159,17 +166,43 @@ pub async fn import_dir(
 // TODO store library metadata somewhere. db? user editable config file may be >
 // - current library base path; where files are copied to on import
 pub struct Library {
-    db_pool: SqlitePool
+    pub db_pool: SqlitePool,
 }
 
 impl Library {
-    pub async fn new(db_path: &str) -> Self {
-        // currently defaults to max 10 conns simultaneously
-        let db_pool =
-        Pool::connect(db_path).await.expect("Error opening db pool");
+    pub async fn open_or_create(db_dir: PathBuf) -> Self {
+        let mut db_path = db_dir;
+        db_path.push("librarian.db");
+
+        if !db_path.exists() {
+            debug!("db does not exist; creating at {:?}", db_path);
+            std::fs::File::create(&db_path).expect("failed to create db");
+        }
+
+        let conn_opts = SqliteConnectOptions::new()
+            .foreign_keys(true)
+            .filename(&db_path);
+
+        let db_pool = sqlx::pool::PoolOptions::new()
+            // sqlite can only write at once, so the async calls get blocked
+            // I can temporarily add a timeout which should help importing
+            // FIXME separate reader / writer conns to bypass (sqlx is working on it)
+            .max_connections(1)
+            .connect_with(conn_opts)
+            .await
+            .expect("Error opening db pool");
+
         info!("connected to db");
 
-        // TODO get lib dir, check if exists, create if not
+        // FIXME get migration dir properly
+        let m = sqlx::migrate::Migrator::new(Path::new(
+            "/Users/jtregoat/Code/music-player/librarian/migrations",
+        ))
+        .await
+        .unwrap();
+        m.run(&db_pool).await.unwrap();
+
+        // TODO determine where libdir should be - same as db?
         // let lib_path: PathBuf = library.into();
         // if !lib_path.exists() {
         //     debug!("library doesn't exist, creating at {:?}", lib_path);
