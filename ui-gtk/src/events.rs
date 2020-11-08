@@ -1,11 +1,15 @@
 use crate::{track_list, AppStore};
 use gtk::GtkListStoreExt;
+use librarian::models::DetailedTrack;
 use log::{debug, error};
 use tokio_compat_02::FutureExt;
 
+// maybe replace the app event loop with tokio watch channel, broadcasting
+// to the widgets that need to be updated. that would scale better than this
 #[derive(Debug)]
 pub enum AppMsg {
-  Tracklist(Vec<librarian::models::DetailedTrack>),
+  Tracklist(Vec<DetailedTrack>),
+  ImportedTracks(Vec<DetailedTrack>),
 }
 
 pub fn app_event_loop(app_state: AppStore) -> impl FnMut(AppMsg) -> glib::Continue {
@@ -19,7 +23,17 @@ pub fn app_event_loop(app_state: AppStore) -> impl FnMut(AppMsg) -> glib::Contin
             track_list::insert_track(tracklist, track);
           }
         } else {
-          error!("recieved tracks before app was available")
+          error!("recieved tracks before list was available")
+        }
+      }
+      AppMsg::ImportedTracks(tracks) => {
+        if let Some(tracklist) = &app_state.lock().unwrap().tracklist {
+          debug!("tracks {:?}", &tracks);
+          for track in tracks {
+            track_list::insert_track(tracklist, track);
+          }
+        } else {
+          error!("recieved track import before list was available")
         }
       }
     };
@@ -36,7 +50,7 @@ pub enum LibraryMsg {
   ImportDir(PathBuf),
 }
 
-// FIXME need to refactor librarian api to hide dealing w threads
+// FIXME need to refactor librarian api to hide dealing w pool conns
 pub async fn librarian_event_loop(
   lib: librarian::Library,
   listener: tokio_mpsc::UnboundedReceiver<LibraryMsg>,
@@ -56,16 +70,22 @@ pub async fn librarian_event_loop(
         }
       }
       LibraryMsg::ImportDir(path) => {
-        debug!("got import msg {:?}", &path);
-        // let imported_tracks = librarian::import_dir(
-        //   &lib.db_pool,
-        //   // FIXME get lib path properly. should be determined inside librarian
-        //   PathBuf::from("/Users/jtregoat/Code/demolib").as_path(),
-        //   path,
-        // )
-        // .compat()
-        // .await;
+        // ideally, this should return tracks in a stream so the UI
+        // is updated with information faster
+        let imported_tracks = librarian::import_dir(
+          &lib.db_pool,
+          // FIXME get lib path properly. should be determined inside librarian
+          PathBuf::from("/Users/jtregoat/Code/demolib").as_path(),
+          path,
+        )
+        .compat()
+        .await;
         // debug!("imoprteed dir {:?}", imported_tracks);
+        {
+          app_chan
+            .send(AppMsg::ImportedTracks(imported_tracks))
+            .unwrap();
+        }
       }
     }
   }
