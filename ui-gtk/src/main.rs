@@ -12,7 +12,7 @@ use gio::prelude::*;
 use gtk::prelude::*;
 use log::{debug, error, info};
 use std::env;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio_compat_02::FutureExt;
 
@@ -20,7 +20,10 @@ mod events;
 mod header;
 mod track_list;
 
-fn build_ui(application: &gtk::Application) -> gtk::ListStore {
+fn build_ui(
+    application: &gtk::Application,
+    lib_chan: tokio_mpsc::UnboundedSender<events::LibraryMsg>,
+) -> gtk::ListStore {
     let window = gtk::ApplicationWindow::new(application);
 
     window.set_title("music player");
@@ -30,11 +33,19 @@ fn build_ui(application: &gtk::Application) -> gtk::ListStore {
 
     let header = header::build_header();
 
-    let (track_list, track_list_store) = track_list::build_track_list();
+    let (track_list_window, track_list_view, track_list_store) = track_list::build_track_list();
+
+    track_list_view.connect_row_activated(move |v, _path, _col| {
+        let sel = v.get_selection().get_selected().unwrap();
+        let track_id: i64 = sel.0.get_value(&sel.1, 0).get().unwrap().unwrap();
+        lib_chan
+            .send(events::LibraryMsg::PlayTrack(track_id))
+            .unwrap();
+    });
 
     let layout = gtk::Box::new(gtk::Orientation::Vertical, 0);
     layout.add(&header);
-    layout.add(&track_list);
+    layout.add(&track_list_window);
 
     window.add(&layout);
     window.show_all();
@@ -133,7 +144,7 @@ pub async fn main() {
     let app_state_2 = app_state.clone();
     application.connect_activate(move |app| {
         app.set_menubar(Some(&menubar));
-        let tracklist = build_ui(app);
+        let tracklist = build_ui(app, tx_lib_2.clone());
 
         app_state_2.lock().unwrap().tracklist = Some(tracklist);
         tx_lib_2.send(events::LibraryMsg::RefreshTracklist).unwrap();

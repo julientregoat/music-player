@@ -1,16 +1,27 @@
 use gio::prelude::*;
+use glib::types::Type as GLibType;
 use gtk::{
     prelude::*, CellRendererText, ListStore, PolicyType, ScrolledWindow, ScrolledWindowBuilder,
-    ShadowType, TreeViewBuilder, TreeViewColumn, TreeViewColumnBuilder, TreeViewGridLines,
+    ShadowType, TreeView, TreeViewBuilder, TreeViewColumn, TreeViewColumnBuilder,
+    TreeViewGridLines,
 };
+use log::debug;
 
 // eventually, we'll allow for more configuration with track list columns
 // master list of columns + default setup
 // allow for user config & store current column setup in config
 // may be better as a part of an enum impl
-const COLUMN_NAMES: &[&'static str] = &["Title", "Duration", "Artist", "Release"];
+// TODO hidden column with track id
+// TODO hash map or tuple for static types
+const COLUMNS: &[(&'static str, GLibType)] = &[
+    ("Id", GLibType::I64),
+    ("Title", GLibType::String),
+    ("Duration", GLibType::String),
+    ("Artist", GLibType::String),
+    ("Release", GLibType::String),
+];
 
-fn build_column(title: &str, pos: i32) -> TreeViewColumn {
+fn build_column(title: &str, pos: i32, is_visible: bool) -> TreeViewColumn {
     let cell = CellRendererText::new();
 
     let col = TreeViewColumnBuilder::new()
@@ -22,18 +33,18 @@ fn build_column(title: &str, pos: i32) -> TreeViewColumn {
     col.pack_start(&cell, true);
     // TODO make column data type configurable
     col.add_attribute(&cell, "text", pos);
+    col.set_visible(is_visible);
     col
 }
 
-pub fn build_track_list() -> (ScrolledWindow, ListStore) {
-    let column_types: Vec<_> = COLUMN_NAMES
-        .into_iter()
-        .map(|_c| String::static_type())
-        .collect();
+pub fn build_track_list() -> (ScrolledWindow, TreeView, ListStore) {
+    // TODO is there a way to borrow these vals?
+    let (column_names, column_types): (Vec<_>, Vec<_>) = COLUMNS.iter().cloned().unzip();
 
     // for now, all cols are strings. not sure of benefits of other types anyway
     let list = ListStore::new(&column_types);
 
+    // if treeview doesn't work out, ListBox could be a viable alternative
     let view = TreeViewBuilder::new()
         .enable_grid_lines(TreeViewGridLines::Both)
         // .fixed_height_mode(true) // improves performance? set sizing needed
@@ -44,8 +55,14 @@ pub fn build_track_list() -> (ScrolledWindow, ListStore) {
         .model(&list)
         .build();
 
-    COLUMN_NAMES.iter().enumerate().for_each(|(idx, name)| {
-        let col = build_column(name, idx as i32);
+    column_names.iter().enumerate().for_each(|(idx, name)| {
+        let is_vis;
+        if idx == 0 {
+            is_vis = false;
+        } else {
+            is_vis = true;
+        }
+        let col = build_column(name, idx as i32, is_vis);
         view.append_column(&col);
     });
 
@@ -59,15 +76,16 @@ pub fn build_track_list() -> (ScrolledWindow, ListStore) {
         // .vexpand_set(true)
         .build();
 
-    (scroll_container, list)
+    (scroll_container, view, list)
 }
 
 pub fn insert_track(list: &ListStore, track: librarian::models::DetailedTrack) {
     // create a column -> Track property mapping?
     list.insert_with_values(
         None,
-        &[0, 2, 3], // FIXME add duration
+        &[0, 1, 3, 4], // FIXME add duration
         &[
+            &track.id,
             &track.name,
             &track
                 .artists

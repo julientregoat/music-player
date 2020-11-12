@@ -1,7 +1,7 @@
 use crate::{track_list, AppStore};
 use gtk::GtkListStoreExt;
 use librarian::models::DetailedTrack;
-use log::{debug, error};
+use log::{debug, error, trace};
 use tokio_compat_02::FutureExt;
 
 // maybe replace the app event loop with tokio watch channel, broadcasting
@@ -17,7 +17,7 @@ pub fn app_event_loop(app_state: AppStore) -> impl FnMut(AppMsg) -> glib::Contin
     match msg {
       AppMsg::Tracklist(tracks) => {
         if let Some(tracklist) = &app_state.lock().unwrap().tracklist {
-          debug!("tracks {:?}", &tracks);
+          trace!("got tracklist {:?}", &tracks);
           tracklist.clear();
           for track in tracks {
             track_list::insert_track(tracklist, track);
@@ -48,6 +48,7 @@ use tokio::sync::mpsc as tokio_mpsc;
 pub enum LibraryMsg {
   RefreshTracklist,
   ImportDir(PathBuf),
+  PlayTrack(i64),
 }
 
 // FIXME need to refactor librarian api to hide dealing w pool conns
@@ -86,6 +87,9 @@ pub async fn librarian_event_loop(
             .send(AppMsg::ImportedTracks(imported_tracks))
             .unwrap();
         }
+      }
+      LibraryMsg::PlayTrack(track_id) => {
+        debug!("got track to play {}", track_id);
       }
     }
   }
