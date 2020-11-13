@@ -6,6 +6,7 @@ extern crate log;
 // TODO PR move serde to test dependencies for this crate
 // TODO find a way to share or reuse reader from rtag
 extern crate aiff;
+extern crate cpal;
 extern crate minimp3;
 extern crate rtag; // TODO use id3
 extern crate sqlx;
@@ -161,6 +162,113 @@ pub async fn import_dir(
     debug!("final copies futures joined");
 
     imported_tracks
+}
+
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
+trait AudioSampleIter {
+    type SampleType: cpal::Sample;
+    // type SampleItem: cpal::Sample;
+    // type SampleIterator: Iterator<Item = Self::SampleItem>;
+    fn next_sample(&mut self) -> Self::SampleType;
+}
+
+impl<R: std::io::Read> AudioSampleIter for hound::WavSamples<'_, R, i16> {
+    type SampleType = i16;
+    fn next_sample(&mut self) -> Self::SampleType {
+        self.next().unwrap().unwrap()
+    }
+}
+
+trait AudioReader<'r> {
+    type SampleIterator: AudioSampleIter;
+    fn sample_iter(&'r mut self) -> Self::SampleIterator;
+}
+
+impl<'wr> AudioReader<'wr> for hound::WavReader<std::fs::File> {
+    type SampleIterator = hound::WavSamples<'wr, std::fs::File, i16>;
+    fn sample_iter(&'wr mut self) -> Self::SampleIterator {
+        self.samples()
+    }
+}
+
+struct AudioDecoder<'r, R: AudioReader<'r>> {
+    reader: R,
+    phantom: std::marker::PhantomData<&'r R>, // FIXME if possible?
+}
+
+impl<'r, R: AudioReader<'r>> AudioDecoder<'r, R> {
+    fn new(reader: R) -> Self {
+        AudioDecoder {
+            reader,
+            phantom: std::marker::PhantomData,
+        }
+    }
+
+    // fn samples() -> impl Iterator<Item = cpal::Sample> {}
+}
+
+fn get_samples(path: &Path) -> AudioDecoder<impl AudioReader> {
+    // can do this with tokio fs as well, but needed?
+    let track_file =
+        std::fs::File::open(&path).expect("Unable to open track file");
+    match path.extension() {
+        Some(e) if e == parse::WAV => {
+            println!("Got flac");
+            let mut r = hound::WavReader::new(track_file).unwrap();
+            AudioDecoder::new(r)
+        }
+        _ => {
+            unimplemented!("got other thing not supported yet");
+        }
+    }
+}
+
+// TODO this should return an error if the track is not available. store in db?
+// TODO should this fn be async?
+// if db access is separated, it can be removed for sure
+// but are the async thread sleeping & fs calls worth it? tbd.
+pub async fn play_track(pool: &SqlitePool, track_id: i64) {
+    let mut conn = pool.acquire().await.unwrap();
+    let track = models::Track::get(&mut conn, track_id).await.unwrap();
+    let track_path = PathBuf::from(track.file_path);
+    let samples = get_samples(track_path.as_path());
+
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .expect("no output device available");
+    let mut supported_configs_range = device
+        .supported_output_configs()
+        .expect("error while querying configs");
+    let config = supported_configs_range
+        .next()
+        .expect("no supported config?!")
+        .with_max_sample_rate()
+        .config();
+
+    debug!("selected device {:?}", device.name().unwrap());
+
+    let stream = device
+        .build_output_stream(
+            &config,
+            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                println!("cb");
+                // react to stream events and read or write stream data here.
+            },
+            move |err| {
+                println!("err {:?}", err);
+                // react to errors here.
+            },
+        )
+        .unwrap();
+
+    stream.play().unwrap();
+
+    // FIXME thread needs to sleep for the duration of the song
+    // there is prob a tokio async fn for this instead, but if the Track is
+    // passed in then this fn doesn't need to be async otherwise.
+    // std::thread::sleep_ms(1000);
 }
 
 // TODO store library metadata somewhere. db? user editable config file may be >

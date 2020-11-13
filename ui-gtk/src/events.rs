@@ -90,6 +90,7 @@ pub async fn librarian_event_loop(
       }
       LibraryMsg::PlayTrack(track_id) => {
         debug!("got track to play {}", track_id);
+        librarian::play_track(&lib.db_pool, track_id).compat().await;
       }
     }
   }

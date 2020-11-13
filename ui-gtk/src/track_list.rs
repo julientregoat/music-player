@@ -11,8 +11,6 @@ use log::debug;
 // master list of columns + default setup
 // allow for user config & store current column setup in config
 // may be better as a part of an enum impl
-// TODO hidden column with track id
-// TODO hash map or tuple for static types
 const COLUMNS: &[(&'static str, GLibType)] = &[
     ("Id", GLibType::I64),
     ("Title", GLibType::String),
