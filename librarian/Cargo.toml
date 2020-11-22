@@ -4,9 +4,12 @@ version = "0.1.0"
 authors = ["Julien Tregoat <jules@jules.nyc>"]
 edition = "2018"
 
+[lib]
+name = 'librarian'
+
 [dependencies]
-tokio = {version = "0.3.3", features = ["fs", "sync"]}
-sqlx = {version = "0.4.0-beta.1", default-features = false, features = ["runtime-tokio", "sqlite", "chrono", "macros", "migrate"]}
+tokio = {version = "0.3.4", features = ["fs", "sync"]}
+sqlx = {version = "0.4.1", default-features = false, features = ["runtime-tokio-native-tls", "sqlite", "chrono", "macros", "migrate"]}
 claxon = "0.4.3"
 futures = "0.3.8"
 chrono = "0.4"
