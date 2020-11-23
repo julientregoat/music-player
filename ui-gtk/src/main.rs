@@ -5,7 +5,6 @@ extern crate gtk;
 extern crate librarian;
 extern crate log;
 extern crate log4rs;
-extern crate sloggers;
 extern crate tokio;
 extern crate tokio_compat_02;
 
