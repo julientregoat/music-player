@@ -97,7 +97,7 @@ pub async fn import_dir(
         // "Unknown Artist" and how the system internally handles the absence of a name
         let mut track_path = import_to.join(&msg.artists[0]).join(&msg.album);
 
-        trace!("about to create dir if needed");
+        trace!("about to create dir if needed {:?}", &track_path);
         match (track_path.exists(), track_path.is_dir()) {
             (false, _) => fs::create_dir_all(&track_path).unwrap(),
             (true, false) => panic!("target track dir exists but is not a dir"),
@@ -180,6 +180,15 @@ impl<R: std::io::Read> AudioSampleIter for hound::WavSamples<'_, R, i16> {
     }
 }
 
+impl AudioSampleIter for claxon::FlacSamples<&'_ mut claxon::input::BufferedReader<std::fs::File>> {
+    type SampleType = i16;
+    fn next_sample(&mut self) -> Self::SampleType {
+        // FIXME this will result in clipping, need to use my cpal branch with 32 bit conversion support
+        self.next().unwrap().unwrap() as i16
+    }
+}
+
+
 trait AudioReader<'r> {
     type SampleIterator: AudioSampleIter;
     fn sample_iter(&'r mut self) -> Self::SampleIterator;
@@ -191,6 +200,14 @@ impl<'wr> AudioReader<'wr> for hound::WavReader<std::fs::File> {
         self.samples()
     }
 }
+
+impl<'r> AudioReader<'r> for claxon::FlacReader<std::fs::File> {
+    type SampleIterator = claxon::FlacSamples<&'r mut claxon::input::BufferedReader<std::fs::File>>;
+    fn sample_iter(&'r mut self) -> Self::SampleIterator {
+        self.samples()
+    }
+}
+
 
 struct AudioDecoder<'r, R: AudioReader<'r>> {
     reader: R,
@@ -213,13 +230,18 @@ fn get_samples(path: &Path) -> AudioDecoder<impl AudioReader> {
     let track_file =
         std::fs::File::open(&path).expect("Unable to open track file");
     match path.extension() {
-        Some(e) if e == parse::WAV => {
+        // Some(e) if e == parse::WAV => {
+        //     println!("Got wav");
+        //     let mut r = hound::WavReader::new(track_file).unwrap();
+        //     AudioDecoder::new(r)
+        // },
+        Some(e) if e == parse::FLAC => {
             println!("Got flac");
-            let mut r = hound::WavReader::new(track_file).unwrap();
+            let  r = claxon::FlacReader::new(track_file).unwrap();
             AudioDecoder::new(r)
         }
-        _ => {
-            unimplemented!("got other thing not supported yet");
+        x => {
+            unimplemented!("got other thing not supported yet {:?}", x);
         }
     }
 }
@@ -304,14 +326,15 @@ impl Library {
         
         // FIXME get migration dir properly
         let mpath = if cfg!(any(target_os = "linux", target_os = "macos"))  {
-            "~/Code/music-player/librarian/migrations"
+            let home = std::env::var("HOME").unwrap();
+            format!("{}{}", home, "/Code/music-player/librarian/migrations")
         } else if cfg!(target_os = "windows") {
-            "/Users/jt-in/Code/music-player/librarian/migrations"
+            String::from("/Users/jt-in/Code/music-player/librarian/migrations")
         } else {
             unimplemented!("whoops")
         };
 
-        let m = sqlx::migrate::Migrator::new(Path::new(mpath))
+        let m = sqlx::migrate::Migrator::new(PathBuf::from(mpath))
         .await
         .unwrap();
         m.run(&db_pool).await.unwrap();

@@ -76,7 +76,7 @@ pub async fn librarian_event_loop(
         let imported_tracks = librarian::import_dir(
           &lib.db_pool,
           // FIXME get lib path properly. should be determined inside librarian
-          PathBuf::from("/Users/jtregoat/Code/demolib").as_path(),
+          PathBuf::from(std::env::var("LIB_DIR").unwrap_or(String::from("./librariandemolib"))).as_path(),
           path,
         )
         .compat()
