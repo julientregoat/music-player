@@ -301,11 +301,17 @@ impl Library {
             .expect("Error opening db pool");
 
         info!("connected to db");
-
+        
         // FIXME get migration dir properly
-        let m = sqlx::migrate::Migrator::new(Path::new(
-            "/Users/jtregoat/Code/music-player/librarian/migrations",
-        ))
+        let mpath = if cfg!(any(target_os = "linux", target_os = "macos"))  {
+            "~/Code/music-player/librarian/migrations"
+        } else if cfg!(target_os = "windows") {
+            "/Users/jt-in/Code/music-player/librarian/migrations"
+        } else {
+            unimplemented!("whoops")
+        };
+
+        let m = sqlx::migrate::Migrator::new(Path::new(mpath))
         .await
         .unwrap();
         m.run(&db_pool).await.unwrap();
