@@ -11,14 +11,12 @@ extern crate minimp3;
 extern crate rtag; // TODO use id3
 extern crate sqlx;
 
-use chrono::Local;
 use futures::future::{self, FutureExt};
 use log::{debug, error, info, trace};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePool},
     Pool,
 };
-use std::env::args;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -169,7 +167,12 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     Sample,
 };
-use playback::*;
+// use playback::*;
+use std::iter::Iterator;
+
+fn get_sample() -> impl Sample {
+    12u16
+}
 // TODO this should return an error if the track is not available. store in db?
 // TODO should this fn be async?
 // if db access is separated, it can be removed for sure
@@ -178,34 +181,78 @@ pub async fn play_track(pool: &SqlitePool, track_id: i64) {
     let mut conn = pool.acquire().await.unwrap();
     let track = models::Track::get(&mut conn, track_id).await.unwrap();
     let track_path = PathBuf::from(track.file_path);
-    let mut audio_decoder = playback::get_samples(track_path.as_path());
+    // let mut decoder = playback::get_samples(track_path);
 
+    // FIXME the issue lies with the config partially
     let host = cpal::default_host();
-    let device = host
+
+    let mut device = host
         .default_output_device()
         .expect("no output device available");
+
+    for d in host.output_devices().unwrap() {
+        println!(
+            "avail device {:?} {:?}",
+            d.name(),
+            d.default_output_config().unwrap()
+        );
+
+        if d.name().unwrap() == "sysdefault:CARD=Generic" {
+            device = d
+        }
+    }
+    println!("selecting");
+
+    println!("selected");
     let mut supported_configs_range = device
         .supported_output_configs()
         .expect("error while querying configs");
-    let config = supported_configs_range
-        .next()
-        .expect("no supported config?!")
-        .with_max_sample_rate()
-        .config();
+
+    let mut configs: Vec<_> = supported_configs_range.collect();
+    let mut config = configs.remove(0);
+    for c in configs {
+        println!("device config {:?}", c);
+        if c.channels() == 2 && c.sample_format() == cpal::SampleFormat::I16 {
+            config = c
+        }
+    }
+
+    // TODO use track metadata to decide proper output samplerate
+    // let config = supported_configs_range
+    //     .next()
+    //     .expect("no supported config?!")
+    //     .with_max_sample_rate()
+    //     .config();
 
     debug!("selected device {:?}", device.name().unwrap());
-    let sample_iter = audio_decoder.samples();
+    // types not working properly
+    // TODO see cpal examples with generic output stream fn
+    // let metadata = decoder.metadata();
+    let (samples, metadata) = playback::get_samples(track_path);
+    let config = config
+        .with_sample_rate(cpal::SampleRate(metadata.sample_rate))
+        .config();
+    println!("config {:?}", config);
+    let audio_chans = metadata.channels;
+    let stream_chans = config.channels;
+    // let stream_chans = 2;
     let mut idx = 0;
 
+    debug!("stream config {:?} {:?}", config, samples.len());
+
+    // better to preconvert the stream?
     let stream = device
         .build_output_stream(
             &config,
-            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                println!("cb");
-                for i in 0..data.len() {
-                    data[i] = sample_iter.next_sample().unwrap().to_f32();
+            move |data: &mut [i16], conf: &cpal::OutputCallbackInfo| {
+                // println!("callback {:?} {:?} {:?}", idx, data.len(), conf.timestamp());
+                // FIXME need to check frame or buffer size to prevent overrunning
+                for frame in data.chunks_mut(stream_chans as usize) {
+                    for point in 0..audio_chans as usize {
+                        frame[point] = samples[idx].to_i16();
+                        idx += 1;
+                    }
                 }
-                // react to stream events and read or write stream data here.
             },
             move |err| {
                 println!("err {:?}", err);
@@ -216,10 +263,12 @@ pub async fn play_track(pool: &SqlitePool, track_id: i64) {
 
     stream.play().unwrap();
 
+    debug!("playing");
+
     // FIXME thread needs to sleep for the duration of the song
     // there is prob a tokio async fn for this instead, but if the Track is
     // passed in then this fn doesn't need to be async otherwise.
-    std::thread::sleep_ms(1000);
+    std::thread::sleep_ms(60000);
 }
 
 // TODO store library metadata somewhere. db? user editable config file may be >
