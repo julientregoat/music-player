@@ -1,45 +1,57 @@
 use claxon::FlacReader;
+use cpal::Sample;
 
 // GOALS
 // - I want to get an iterator with an item that meets the cpal::Sample interface
 // so I can collect samples into a vec
 // - needs to implement Send so it can be used cross thread
 
-trait SampleConvertIter: Iterator {
-    type SampleType: cpal::Sample;
-    fn to_sample(val: Self::Item) -> Self::SampleType;
+trait SampleConvertIter<S: cpal::Sample>: Iterator {
+    fn to_sample(val: Self::Item) -> S;
 }
 
 type FlacSampleIter<'r, R: std::io::Read> =
     claxon::FlacSamples<&'r mut claxon::input::BufferedReader<R>>;
 
-impl<'r, R: std::io::Read> SampleConvertIter for FlacSampleIter<'r, R> {
-    type SampleType = f32;
-    fn to_sample(val: Result<i32, claxon::Error>) -> f32 {
-        (val.unwrap().abs() as f64 / i32::MAX as f64) as f32
+// TODO this code should be able to be simplified once 24/32 bit support is impl
+// right now it'll break or sound incorrect for non 16 bit vals
+impl<'r, R: std::io::Read> SampleConvertIter<i16> for FlacSampleIter<'r, R> {
+    fn to_sample(val: Result<i32, claxon::Error>) -> i16 {
+        val.unwrap() as i16
     }
 }
 
+impl<'r, R: std::io::Read> SampleConvertIter<f32> for FlacSampleIter<'r, R> {
+    fn to_sample(val: Result<i32, claxon::Error>) -> f32 {
+        let sample: i16 = FlacSampleIter::<R>::to_sample(val);
+        sample.to_f32()
+    }
+}
+
+#[derive(Debug)]
 pub struct TrackMetadata {
     pub bit_rate: u16,
     pub sample_rate: u32,
     pub channels: u16,
 }
 
-// easy way out
-pub fn get_samples(path: std::path::PathBuf) -> (Vec<impl cpal::Sample>, TrackMetadata) {
-    let track_file = std::fs::File::open(&path).expect("Unable to open track file");
+// easy way out - returning a collected vec instead of the iterator
+pub fn get_samples(
+    path: std::path::PathBuf,
+) -> (Vec<impl cpal::Sample>, TrackMetadata) {
+    let track_file =
+        std::fs::File::open(&path).expect("Unable to open track file");
     match path.extension() {
         Some(e) if e == crate::parse::FLAC => {
             println!("Got flac");
             let mut r = FlacReader::new(track_file).unwrap();
             println!("about to collect");
 
-            // FIXME why does this take so long?
-            let s: Vec<_> = r
+            // FIXME this takes a long time; iterator would be faster
+            let s: Vec<f32> = r
                 .samples()
                 // .map(|i| i.unwrap())
-                .map(|i| (i.unwrap().abs() as f64 / i32::MAX as f64) as f32)
+                .map(|i| FlacSampleIter::<std::fs::File>::to_sample(i))
                 .collect();
             println!("collected {:?}", s.len());
 
@@ -60,19 +72,3 @@ pub fn get_samples(path: std::path::PathBuf) -> (Vec<impl cpal::Sample>, TrackMe
         }
     }
 }
-
-// TODO would be nice to return an iterator so things can be done as needed
-// pub fn get_sample_iter(path: std::path::PathBuf) -> Box<impl Iterator<Item = dyn cpal::Sample>> {
-//     let track_file = std::fs::File::open(&path).expect("Unable to open track file");
-//     match path.extension() {
-//         Some(e) if e == crate::parse::FLAC => {
-//             println!("Got flac");
-//             let r = FlacReader::new(track_file).unwrap();
-//             // FIXME need to store the reader
-//             unimplemented!()
-//         }
-//         x => {
-//             unimplemented!("got other thing not supported yet {:?}", x);
-//         }
-//     }
-// }
