@@ -76,7 +76,8 @@ pub async fn librarian_event_loop(
         let imported_tracks = librarian::import_dir(
           &lib.db_pool,
           // FIXME get lib path properly. should be determined inside librarian
-          PathBuf::from(std::env::var("LIB_DIR").unwrap_or(String::from("./librariandemolib"))).as_path(),
+          PathBuf::from(std::env::var("LIB_DIR").unwrap_or(String::from("./librariandemolib")))
+            .as_path(),
           path,
         )
         .compat()
@@ -90,7 +91,9 @@ pub async fn librarian_event_loop(
       }
       LibraryMsg::PlayTrack(track_id) => {
         debug!("got track to play {}", track_id);
-        librarian::play_track(&lib.db_pool, track_id).compat().await;
+        librarian::playback::play_track(&lib.db_pool, track_id)
+          .compat()
+          .await;
       }
     }
   }

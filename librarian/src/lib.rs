@@ -27,7 +27,7 @@ use tokio::sync::mpsc as tokio_mpsc;
 
 pub mod models;
 pub mod parse;
-mod playback;
+pub mod playback;
 
 // config options
 // importing
@@ -161,124 +161,6 @@ pub async fn import_dir(
     debug!("final copies futures joined");
 
     imported_tracks
-}
-
-use cpal::{
-    traits::{DeviceTrait, HostTrait, StreamTrait},
-    Sample,
-};
-// use playback::*;
-use std::iter::Iterator;
-
-// TODO this should return an error if the track is not available. store in db?
-// TODO should this fn be async?
-// if db access is separated, it can be removed for sure
-// but are the async thread sleeping & fs calls worth it? tbd.
-pub async fn play_track(pool: &SqlitePool, track_id: i64) {
-    let mut conn = pool.acquire().await.unwrap();
-    let track = models::Track::get(&mut conn, track_id).await.unwrap();
-    let track_path = PathBuf::from(track.file_path);
-    // let mut decoder = playback::get_samples(track_path);
-
-    // FIXME the issue lies with the config partially
-    let host = cpal::default_host();
-
-    let mut device = host
-        .default_output_device()
-        .expect("no output device available");
-
-    // for d in host.output_devices().unwrap() {
-    //     println!(
-    //         "avail device {:?} {:?}",
-    //         d.name(),
-    //         d.default_output_config().unwrap()
-    //     );
-
-    //     // if d.name().unwrap() == "sysdefault:CARD=Generic" {
-    //     //     device = d
-    //     // }
-    // }
-
-    let supported_configs_range = device
-        .supported_output_configs()
-        .expect("error while querying configs");
-
-    // TODO use track metadata to decide proper output samplerate
-    // let config = supported_configs_range
-    //     .next()
-    //     .expect("no supported config?!")
-    //     .with_max_sample_rate()
-    //     .config();
-
-    debug!("selected device {:?}", device.name().unwrap());
-    // types not working properly
-    // TODO see cpal examples with generic output stream fn
-    // let metadata = decoder.metadata();
-    let (samples, metadata) = playback::get_samples(track_path);
-    println!("track meta {:?}", metadata);
-
-    let mut config = None;
-    for c in supported_configs_range {
-        println!("device config {:?}", c);
-        if c.channels() == metadata.channels
-            && c.sample_format() == cpal::SampleFormat::F32
-            && c.min_sample_rate().0 <= metadata.sample_rate
-            && c.max_sample_rate().0 >= metadata.sample_rate
-        {
-            config = Some(c)
-        }
-    }
-
-    if config.is_none() {
-        panic!("no config deteected")
-    }
-
-    let config = config
-        .unwrap()
-        .with_sample_rate(cpal::SampleRate(metadata.sample_rate))
-        .config();
-    println!("config {:?}", config);
-
-    let audio_chans = metadata.channels;
-    let stream_chans = config.channels;
-    println!(
-        "audio chans {:?}, streaem chans {:?}",
-        audio_chans, stream_chans
-    );
-    let mut idx = 0;
-
-    debug!("stream config {:?} {:?}", config, samples.len());
-
-    // better to preconvert the stream?
-    let stream = device
-        .build_output_stream(
-            &config,
-            move |data: &mut [f32], conf: &cpal::OutputCallbackInfo| {
-                // println!("callback idx {:?} buffer len {:?}", idx, data.len());
-                // FIXME need to check frame or buffer size to prevent overrunning
-                for frame in data.chunks_mut(stream_chans as usize) {
-                    for point in 0..audio_chans as usize {
-                        frame[point] = samples[idx].to_f32();
-                        // println!("frame {:?}", frame[point]);
-                        idx += 1;
-                    }
-                }
-            },
-            move |err| {
-                println!("err {:?}", err);
-                // react to errors here.
-            },
-        )
-        .unwrap();
-
-    stream.play().unwrap();
-
-    debug!("playing");
-
-    // FIXME thread needs to sleep for the duration of the song
-    // there is prob a tokio async fn for this instead, but if the Track is
-    // passed in then this fn doesn't need to be async otherwise.
-    std::thread::sleep_ms(60000);
 }
 
 // TODO store library metadata somewhere. db? user editable config file may be >
