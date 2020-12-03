@@ -3,7 +3,7 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     Sample,
 };
-use log::debug;
+use log::{debug, error};
 use std::path::PathBuf;
 
 // GOALS
@@ -40,30 +40,34 @@ pub struct TrackMetadata {
     pub channels: u16,
 }
 
-// easy way out - returning a collected vec instead of the iterator
-pub fn get_samples(path: PathBuf) -> (Vec<impl cpal::Sample>, TrackMetadata) {
+pub fn get_sample_chan(
+    path: PathBuf,
+) -> (
+    Receiver<impl cpal::Sample>,
+    std::thread::JoinHandle<()>,
+    TrackMetadata,
+) {
     let track_file =
         std::fs::File::open(&path).expect("Unable to open track file");
     match path.extension() {
         Some(e) if e == crate::parse::FLAC => {
+            let (tx, rx) = std::sync::mpsc::channel::<f32>();
             println!("Got flac");
             let mut r = FlacReader::new(track_file).unwrap();
             println!("about to collect");
 
-            // FIXME this takes a long time; passing iterator to stream is faster
-            // maybe SIMD will help tho
-            let s: Vec<f32> = r
-                .samples()
-                // .map(|i| i.unwrap())
-                .map(|i| FlacSampleIter::<std::fs::File>::to_sample(i))
-                .collect();
-            println!("collected {:?}", s.len());
-
-            // let s = s.iter().map(|i| *i as i16).collect();
-            // println!("second collect");
             let meta = r.streaminfo();
+
+            let parse_thread = std::thread::spawn(move || {
+                for s in r.samples() {
+                    tx.send(FlacSampleIter::<std::fs::File>::to_sample(s))
+                        .unwrap();
+                }
+            });
+
             (
-                s,
+                rx,
+                parse_thread,
                 TrackMetadata {
                     bit_rate: meta.bits_per_sample as u16,
                     sample_rate: meta.sample_rate,
@@ -79,7 +83,7 @@ pub fn get_samples(path: PathBuf) -> (Vec<impl cpal::Sample>, TrackMetadata) {
 
 fn get_output_stream<O, I>(
     device: &cpal::Device,
-    samples: Vec<I>,
+    sample_chan: std::sync::mpsc::Receiver<I>,
     config: &cpal::StreamConfig,
     channels: usize,
 ) -> Result<cpal::Stream, cpal::BuildStreamError>
@@ -92,22 +96,24 @@ where
     device.build_output_stream(
         config,
         move |data: &mut [O], conf: &cpal::OutputCallbackInfo| {
-            println!("callback idx {:?} buffer len {:?}", idx, data.len());
-            // FIXME need to check frame or buffer size to prevent overrunning
+            // debug!("callback idx {:?} buffer len {:?}", idx, data.len());
             for frame in data.chunks_mut(stream_chans as usize) {
                 for point in 0..channels {
-                    frame[point] = cpal::Sample::from::<I>(&samples[idx]);
+                    frame[point] =
+                        cpal::Sample::from::<I>(&sample_chan.recv().unwrap());
                     // println!("frame {:?}", frame[point]);
                     idx += 1;
                 }
             }
         },
         move |err| {
-            println!("err {:?}", err);
-            // react to errors here.
+            // TODO
+            error!("err {:?}", err);
         },
     )
 }
+
+use std::sync::mpsc::{Receiver, Sender};
 
 // TODO at least part of this function should be separated and impl'd on Library
 // TODO this should return an error if the track is not available. update db?
@@ -120,18 +126,17 @@ pub async fn play_track(pool: &sqlx::SqlitePool, track_id: i64) {
         .await
         .unwrap();
     let track_path = PathBuf::from(track.file_path);
-    // let mut decoder = playback::get_samples(track_path);
 
-    // FIXME the issue lies with the config partially
     let host = cpal::default_host();
 
-    let mut device = host
+    let device = host
         .default_output_device()
         .expect("no output device available");
 
     debug!("selected device {:?}", device.name().unwrap());
 
-    let (samples, metadata) = get_samples(track_path);
+    let (rx, parse_thread, metadata) = get_sample_chan(track_path);
+
     println!("track meta {:?}", metadata);
 
     // TODO prioritize config w/ == channels, then >= channels, then < channels
@@ -158,19 +163,19 @@ pub async fn play_track(pool: &sqlx::SqlitePool, track_id: i64) {
     let stream = match output_format {
         cpal::SampleFormat::U16 => get_output_stream::<u16, _>(
             &device,
-            samples,
+            rx,
             &config,
             audio_chans as usize,
         ),
         cpal::SampleFormat::I16 => get_output_stream::<i16, _>(
             &device,
-            samples,
+            rx,
             &config,
             audio_chans as usize,
         ),
         cpal::SampleFormat::F32 => get_output_stream::<f32, _>(
             &device,
-            samples,
+            rx,
             &config,
             audio_chans as usize,
         ),
@@ -185,4 +190,7 @@ pub async fn play_track(pool: &sqlx::SqlitePool, track_id: i64) {
     // there is prob a tokio async fn for this instead, but if the Track is
     // passed in then this fn doesn't need to be async otherwise.
     std::thread::sleep_ms(60000);
+
+    parse_thread.join().unwrap();
+    // TODO nstore stream in lib so it can be paused
 }
