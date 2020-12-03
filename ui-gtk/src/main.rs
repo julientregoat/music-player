@@ -20,10 +20,7 @@ mod events;
 mod header;
 mod track_list;
 
-fn build_ui(
-    application: &gtk::Application,
-    lib_chan: tokio_mpsc::UnboundedSender<events::LibraryMsg>,
-) -> gtk::ListStore {
+fn build_ui(application: &gtk::Application, lib_chan: events::LibEventSender) -> gtk::ListStore {
     let window = gtk::ApplicationWindow::new(application);
 
     window.set_title("music player");
@@ -31,7 +28,7 @@ fn build_ui(
     window.set_position(gtk::WindowPosition::Mouse);
     window.set_default_size(600, 400);
 
-    let header = header::build_header();
+    let header = header::build_header(lib_chan.clone());
 
     let (track_list_window, track_list_view, track_list_store) = track_list::build_track_list();
 
@@ -55,10 +52,7 @@ fn build_ui(
 
 const IMPORT_ACTION: &'static str = "import";
 
-fn build_menu_bar(
-    app: &gtk::Application,
-    lib_chan: tokio_mpsc::UnboundedSender<events::LibraryMsg>,
-) -> gio::Menu {
+fn build_menu_bar(app: &gtk::Application, lib_chan: events::LibEventSender) -> gio::Menu {
     // should the creation and registration of actions be separate?
     // not a fan of the nested closures. seems necessary for menu bar tho?
     let import_action = gio::SimpleAction::new(IMPORT_ACTION, None);
@@ -144,7 +138,6 @@ pub async fn main() {
         .unwrap();
 
     let handle = log4rs::init_config(config).unwrap();
-    let lib = librarian::Library::open_or_create(db_dir).compat().await;
 
     let app_state = Arc::new(Mutex::new(AppState { tracklist: None }));
 
@@ -157,7 +150,9 @@ pub async fn main() {
     let (tx_lib, rx_lib) = tokio_mpsc::unbounded_channel();
 
     rx_app.attach(Some(&main_ctx), events::app_event_loop(app_state.clone()));
-    tokio::spawn(events::librarian_event_loop(lib, rx_lib, tx_app.clone()));
+
+    let lib = librarian::Library::open_or_create(db_dir).compat().await;
+    tokio::spawn(async move { events::librarian_event_loop(lib, rx_lib, tx_app.clone()).await });
 
     let application = gtk::ApplicationBuilder::new()
         .application_id("nyc.jules.music-player")
