@@ -47,8 +47,7 @@ pub fn get_sample_chan(
     std::thread::JoinHandle<()>,
     TrackMetadata,
 ) {
-    let track_file =
-        std::fs::File::open(&path).expect("Unable to open track file");
+    let track_file = std::fs::File::open(&path).expect("Unable to open track file");
     match path.extension() {
         Some(e) if e == crate::parse::FLAC => {
             let (tx, rx) = std::sync::mpsc::channel::<f32>();
@@ -99,8 +98,7 @@ where
             // debug!("callback idx {:?} buffer len {:?}", idx, data.len());
             for frame in data.chunks_mut(stream_chans as usize) {
                 for point in 0..channels {
-                    frame[point] =
-                        cpal::Sample::from::<I>(&sample_chan.recv().unwrap());
+                    frame[point] = cpal::Sample::from::<I>(&sample_chan.recv().unwrap());
                     // println!("frame {:?}", frame[point]);
                     idx += 1;
                 }
@@ -115,18 +113,12 @@ where
 
 use std::sync::mpsc::{Receiver, Sender};
 
-// TODO at least part of this function should be separated and impl'd on Library
+// TODO more of this fn should be moved to the library impl
 // TODO this should return an error if the track is not available. update db?
 // TODO should this fn be async?
 // if db access is separated, it can be removed for sure
 // but are the async thread sleeping & fs calls worth it? tbd.
-pub async fn play_track(pool: &sqlx::SqlitePool, track_id: i64) {
-    let mut conn = pool.acquire().await.unwrap();
-    let track = crate::models::Track::get(&mut conn, track_id)
-        .await
-        .unwrap();
-    let track_path = PathBuf::from(track.file_path);
-
+pub fn play_track(track_path: PathBuf) -> (cpal::Stream, std::thread::JoinHandle<()>) {
     let host = cpal::default_host();
 
     let device = host
@@ -161,24 +153,15 @@ pub async fn play_track(pool: &sqlx::SqlitePool, track_id: i64) {
 
     // CAREFUL: stream must be stored in a var before playback
     let stream = match output_format {
-        cpal::SampleFormat::U16 => get_output_stream::<u16, _>(
-            &device,
-            rx,
-            &config,
-            audio_chans as usize,
-        ),
-        cpal::SampleFormat::I16 => get_output_stream::<i16, _>(
-            &device,
-            rx,
-            &config,
-            audio_chans as usize,
-        ),
-        cpal::SampleFormat::F32 => get_output_stream::<f32, _>(
-            &device,
-            rx,
-            &config,
-            audio_chans as usize,
-        ),
+        cpal::SampleFormat::U16 => {
+            get_output_stream::<u16, _>(&device, rx, &config, audio_chans as usize)
+        }
+        cpal::SampleFormat::I16 => {
+            get_output_stream::<i16, _>(&device, rx, &config, audio_chans as usize)
+        }
+        cpal::SampleFormat::F32 => {
+            get_output_stream::<f32, _>(&device, rx, &config, audio_chans as usize)
+        }
     }
     .unwrap();
 
@@ -186,11 +169,5 @@ pub async fn play_track(pool: &sqlx::SqlitePool, track_id: i64) {
 
     debug!("playing");
 
-    // FIXME thread needs to sleep for the duration of the song
-    // there is prob a tokio async fn for this instead, but if the Track is
-    // passed in then this fn doesn't need to be async otherwise.
-    std::thread::sleep_ms(60000);
-
-    parse_thread.join().unwrap();
-    // TODO nstore stream in lib so it can be paused
+    (stream, parse_thread)
 }

@@ -163,10 +163,20 @@ pub async fn import_dir(
     imported_tracks
 }
 
+#[derive(Debug)]
+pub enum StreamCommand {
+    Pause,
+    Play,
+}
+use cpal::traits::StreamTrait;
+use std::sync::mpsc::{Receiver, Sender};
 // TODO store library metadata somewhere. db? user editable config file may be >
 // - current library base path; where files are copied to on import
 pub struct Library {
     pub db_pool: SqlitePool,
+    // abstract sthread + tx to struct
+    stream_thread: Option<std::thread::JoinHandle<()>>,
+    tx_stream: Option<Sender<StreamCommand>>,
 }
 
 impl Library {
@@ -222,6 +232,63 @@ impl Library {
         //     panic!("library path can't be a relative path")
         // }
 
-        Library { db_pool }
+        Library {
+            db_pool,
+            stream_thread: None,
+            tx_stream: None,
+        }
+    }
+
+    pub async fn play_track(&mut self, track_id: i64) {
+        let mut conn = self.db_pool.acquire().await.unwrap();
+        let track = crate::models::Track::get(&mut conn, track_id)
+            .await
+            .unwrap();
+        let track_path = PathBuf::from(track.file_path);
+        let (tx, rx) = std::sync::mpsc::channel();
+        // This was done because cpal::Stream is !Send, causing headaches upstream
+        // Maybe there is a way to avoid this, but it seems it would require
+        // keeping the stream on the main thread, which I'm not sure a lib
+        // can guarantee.
+        self.stream_thread = Some(std::thread::spawn(move || {
+            // TODO 'stop' command that closes channel and thread
+            // TODO thread should only last as long as duration of song
+            let (s, pt) = playback::play_track(track_path);
+            while let Ok(res) = rx.recv() {
+                debug!("received command {:?}", &res);
+                match res {
+                    StreamCommand::Pause => {
+                        s.pause().unwrap();
+                    }
+                    StreamCommand::Play => {
+                        s.play().unwrap();
+                    }
+                }
+            }
+            pt.join().unwrap();
+        }));
+
+        self.tx_stream = Some(tx);
+    }
+
+    pub fn play_stream(&self) {
+        debug!("play");
+        match &self.tx_stream {
+            Some(tx) => {
+                debug!("play");
+                tx.send(StreamCommand::Play).unwrap();
+            }
+            None => (),
+        }
+    }
+
+    pub fn pause_stream(&self) {
+        debug!("pause");
+        match &self.tx_stream {
+            Some(tx) => {
+                tx.send(StreamCommand::Pause).unwrap();
+            }
+            None => (),
+        }
     }
 }
