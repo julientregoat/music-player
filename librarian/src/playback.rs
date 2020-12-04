@@ -113,7 +113,7 @@ where
 
 use std::sync::mpsc::{Receiver, Sender};
 
-// TODO more of this fn should be moved to the library impl
+// FIXME rename fn
 // TODO this should return an error if the track is not available. update db?
 // TODO should this fn be async?
 // if db access is separated, it can be removed for sure
@@ -170,4 +170,69 @@ pub fn play_track(track_path: PathBuf) -> (cpal::Stream, std::thread::JoinHandle
     debug!("playing");
 
     (stream, parse_thread)
+}
+
+#[derive(Debug)]
+pub enum StreamCommand {
+    Pause,
+    Play,
+    Stop,
+}
+pub struct AudioStream {
+    thread: std::thread::JoinHandle<()>,
+    tx_stream: Sender<StreamCommand>,
+}
+
+impl AudioStream {
+    pub fn from_path(source_path: PathBuf) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        // This was done because cpal::Stream is !Send, causing headaches upstream
+        // Maybe there is a way to avoid this, but it seems it would require
+        // keeping the stream on the main thread, which I'm not sure a lib
+        // can guarantee.
+
+        // this still needs to be external via exposed API
+        // if self.stream_thread.is_some() {
+        //     self.tx_stream.as_ref().unwrap().send(StreamCommand::Stop);
+        // }
+
+        let thread = std::thread::spawn(move || {
+            // TODO thread should only last as long as duration of song
+            let (s, pt) = play_track(source_path);
+            while let Ok(res) = rx.recv() {
+                debug!("received command {:?}", &res);
+                match res {
+                    StreamCommand::Pause => {
+                        s.pause().unwrap();
+                    }
+                    StreamCommand::Play => {
+                        s.play().unwrap();
+                    }
+                    StreamCommand::Stop => {
+                        s.pause().unwrap();
+                        break;
+                    }
+                }
+            }
+            // letting the thread handle drop appears to close the stream asap
+            // pt.join().unwrap();
+        });
+
+        AudioStream {
+            thread,
+            tx_stream: tx,
+        }
+    }
+
+    pub fn play(&self) {
+        self.tx_stream.send(StreamCommand::Play).unwrap();
+    }
+
+    pub fn pause(&self) {
+        self.tx_stream.send(StreamCommand::Pause).unwrap()
+    }
+
+    pub fn stop(&self) {
+        self.tx_stream.send(StreamCommand::Stop).unwrap()
+    }
 }

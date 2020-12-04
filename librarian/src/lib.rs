@@ -29,6 +29,8 @@ pub mod models;
 pub mod parse;
 pub mod playback;
 
+use playback::AudioStream;
+
 // config options
 // importing
 // - if track with same name + release (and thus artist) exists
@@ -163,22 +165,15 @@ pub async fn import_dir(
     imported_tracks
 }
 
-#[derive(Debug)]
-pub enum StreamCommand {
-    Pause,
-    Play,
-}
 use cpal::traits::StreamTrait;
 use std::sync::mpsc::{Receiver, Sender};
 // TODO store library metadata somewhere. db? user editable config file may be >
 // - current library base path; where files are copied to on import
 pub struct Library {
     pub db_pool: SqlitePool,
-    // abstract sthread + tx to struct
-    stream_thread: Option<std::thread::JoinHandle<()>>,
-    tx_stream: Option<Sender<StreamCommand>>,
+    // abstract sthread + tx to struct that requires both
+    stream: Option<AudioStream>,
 }
-
 impl Library {
     pub async fn open_or_create(db_dir: PathBuf) -> Self {
         let mut db_path = db_dir;
@@ -234,8 +229,7 @@ impl Library {
 
         Library {
             db_pool,
-            stream_thread: None,
-            tx_stream: None,
+            stream: None,
         }
     }
 
@@ -245,50 +239,23 @@ impl Library {
             .await
             .unwrap();
         let track_path = PathBuf::from(track.file_path);
-        let (tx, rx) = std::sync::mpsc::channel();
-        // This was done because cpal::Stream is !Send, causing headaches upstream
-        // Maybe there is a way to avoid this, but it seems it would require
-        // keeping the stream on the main thread, which I'm not sure a lib
-        // can guarantee.
-        self.stream_thread = Some(std::thread::spawn(move || {
-            // TODO 'stop' command that closes channel and thread
-            // TODO thread should only last as long as duration of song
-            let (s, pt) = playback::play_track(track_path);
-            while let Ok(res) = rx.recv() {
-                debug!("received command {:?}", &res);
-                match res {
-                    StreamCommand::Pause => {
-                        s.pause().unwrap();
-                    }
-                    StreamCommand::Play => {
-                        s.play().unwrap();
-                    }
-                }
-            }
-            pt.join().unwrap();
-        }));
 
-        self.tx_stream = Some(tx);
+        if self.stream.is_some() {
+            self.stream.as_ref().unwrap().stop();
+        }
+
+        self.stream = Some(AudioStream::from_path(track_path));
     }
 
     pub fn play_stream(&self) {
-        debug!("play");
-        match &self.tx_stream {
-            Some(tx) => {
-                debug!("play");
-                tx.send(StreamCommand::Play).unwrap();
-            }
-            None => (),
+        if self.stream.is_some() {
+            self.stream.as_ref().unwrap().play();
         }
     }
 
     pub fn pause_stream(&self) {
-        debug!("pause");
-        match &self.tx_stream {
-            Some(tx) => {
-                tx.send(StreamCommand::Pause).unwrap();
-            }
-            None => (),
+        if self.stream.is_some() {
+            self.stream.as_ref().unwrap().pause();
         }
     }
 }
