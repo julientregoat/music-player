@@ -405,11 +405,11 @@ pub fn parse_aiff(p: PathBuf) -> Option<ParseResult> {
     None
 }
 
-const FLAC: &'static str = "flac";
-const WAV: &'static str = "wav";
-const MP3: &'static str = "mp3";
-const AIF: &'static str = "aif";
-const AIFF: &'static str = "aiff";
+pub const FLAC: &'static str = "flac";
+pub const WAV: &'static str = "wav";
+pub const MP3: &'static str = "mp3";
+pub const AIF: &'static str = "aif";
+pub const AIFF: &'static str = "aiff";
 
 // TODO handle ext casing, normalize?
 pub fn parse_track(path: PathBuf) -> Option<ParseResult> {

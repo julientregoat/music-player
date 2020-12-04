@@ -6,18 +6,17 @@ extern crate log;
 // TODO PR move serde to test dependencies for this crate
 // TODO find a way to share or reuse reader from rtag
 extern crate aiff;
+extern crate cpal;
 extern crate minimp3;
 extern crate rtag; // TODO use id3
 extern crate sqlx;
 
-use chrono::Local;
 use futures::future::{self, FutureExt};
 use log::{debug, error, info, trace};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePool},
     Pool,
 };
-use std::env::args;
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -28,6 +27,9 @@ use tokio::sync::mpsc as tokio_mpsc;
 
 pub mod models;
 pub mod parse;
+pub mod playback;
+
+use playback::AudioStream;
 
 // config options
 // importing
@@ -96,7 +98,7 @@ pub async fn import_dir(
         // "Unknown Artist" and how the system internally handles the absence of a name
         let mut track_path = import_to.join(&msg.artists[0]).join(&msg.album);
 
-        trace!("about to create dir if needed");
+        trace!("about to create dir if needed {:?}", &track_path);
         match (track_path.exists(), track_path.is_dir()) {
             (false, _) => fs::create_dir_all(&track_path).unwrap(),
             (true, false) => panic!("target track dir exists but is not a dir"),
@@ -163,12 +165,15 @@ pub async fn import_dir(
     imported_tracks
 }
 
+use cpal::traits::StreamTrait;
+use std::sync::mpsc::{Receiver, Sender};
 // TODO store library metadata somewhere. db? user editable config file may be >
 // - current library base path; where files are copied to on import
 pub struct Library {
     pub db_pool: SqlitePool,
+    // abstract sthread + tx to struct that requires both
+    stream: Option<AudioStream>,
 }
-
 impl Library {
     pub async fn open_or_create(db_dir: PathBuf) -> Self {
         let mut db_path = db_dir;
@@ -195,11 +200,18 @@ impl Library {
         info!("connected to db");
 
         // FIXME get migration dir properly
-        let m = sqlx::migrate::Migrator::new(Path::new(
-            "/Users/jtregoat/Code/music-player/librarian/migrations",
-        ))
-        .await
-        .unwrap();
+        let mpath = if cfg!(any(target_os = "linux", target_os = "macos")) {
+            let home = std::env::var("HOME").unwrap();
+            format!("{}{}", home, "/Code/music-player/librarian/migrations")
+        } else if cfg!(target_os = "windows") {
+            String::from("/Users/jt-in/Code/music-player/librarian/migrations")
+        } else {
+            unimplemented!("whoops")
+        };
+
+        let m = sqlx::migrate::Migrator::new(PathBuf::from(mpath))
+            .await
+            .unwrap();
         m.run(&db_pool).await.unwrap();
 
         // TODO determine where libdir should be - same as db?
@@ -215,6 +227,35 @@ impl Library {
         //     panic!("library path can't be a relative path")
         // }
 
-        Library { db_pool }
+        Library {
+            db_pool,
+            stream: None,
+        }
+    }
+
+    pub async fn play_track(&mut self, track_id: i64) {
+        let mut conn = self.db_pool.acquire().await.unwrap();
+        let track = crate::models::Track::get(&mut conn, track_id)
+            .await
+            .unwrap();
+        let track_path = PathBuf::from(track.file_path);
+
+        if self.stream.is_some() {
+            self.stream.as_ref().unwrap().stop();
+        }
+
+        self.stream = Some(AudioStream::from_path(track_path));
+    }
+
+    pub fn play_stream(&self) {
+        if self.stream.is_some() {
+            self.stream.as_ref().unwrap().play();
+        }
+    }
+
+    pub fn pause_stream(&self) {
+        if self.stream.is_some() {
+            self.stream.as_ref().unwrap().pause();
+        }
     }
 }
