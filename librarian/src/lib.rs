@@ -8,19 +8,16 @@ extern crate log;
 extern crate aiff;
 extern crate cpal;
 extern crate minimp3;
+extern crate num_traits;
 extern crate rtag; // TODO use id3
 extern crate sqlx;
 
 use futures::future::{self, FutureExt};
 use log::{debug, error, info, trace};
-use sqlx::{
-    sqlite::{SqliteConnectOptions, SqlitePool},
-    Pool,
-};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use std::{
-    env, fs,
+    fs,
     path::{Path, PathBuf},
-    sync::mpsc,
 };
 use tokio::fs as async_fs;
 use tokio::sync::mpsc as tokio_mpsc;
@@ -165,8 +162,6 @@ pub async fn import_dir(
     imported_tracks
 }
 
-use cpal::traits::StreamTrait;
-use std::sync::mpsc::{Receiver, Sender};
 // TODO store library metadata somewhere. db? user editable config file may be >
 // - current library base path; where files are copied to on import
 pub struct Library {
@@ -238,6 +233,11 @@ impl Library {
         let track = crate::models::Track::get(&mut conn, track_id)
             .await
             .unwrap();
+
+        if !playback::is_cpal_sample(track.bit_rate) {
+            panic!("unsupported bitrate");
+        }
+
         let track_path = PathBuf::from(track.file_path);
 
         if self.stream.is_some() {

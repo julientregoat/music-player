@@ -19,5 +19,6 @@ log = "0.4.11"
 minimp3 = "0.3.5"
 aiff = {git = "https://github.com/julientregoat/aiff-rs.git"}
 cpal = "0.13.1"
+num-traits = "0.2.14"
 
 [dev-dependencies]

@@ -1009,6 +1009,7 @@ dependencies = [
  "hound",
  "log 0.4.11",
  "minimp3",
+ "num-traits 0.2.14",
  "rtag",
  "sqlx",
  "tokio 0.3.4",

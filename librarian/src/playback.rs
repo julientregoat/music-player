@@ -4,7 +4,16 @@ use cpal::{
     Sample,
 };
 use log::{debug, error};
+use num_traits::NumCast;
 use std::path::PathBuf;
+
+pub fn is_cpal_sample<I: NumCast + std::cmp::Eq>(val: I) -> bool {
+    match val {
+        x if x == NumCast::from(16).unwrap() => true,
+        x if x == NumCast::from(24).unwrap() || x == NumCast::from(32).unwrap() => false,
+        _ => false,
+    }
+}
 
 // GOALS
 // - I want to get an iterator with an item that meets the cpal::Sample interface
@@ -15,8 +24,7 @@ trait SampleConvertIter<S: cpal::Sample>: Iterator {
     fn to_sample(val: Self::Item) -> S;
 }
 
-type FlacSampleIter<'r, R: std::io::Read> =
-    claxon::FlacSamples<&'r mut claxon::input::BufferedReader<R>>;
+type FlacSampleIter<'r, R> = claxon::FlacSamples<&'r mut claxon::input::BufferedReader<R>>;
 
 // TODO this code should be able to be simplified once 24/32 bit support is impl
 // right now it'll break or sound incorrect for non 16 bit vals
@@ -34,18 +42,18 @@ impl<'r, R: std::io::Read> SampleConvertIter<f32> for FlacSampleIter<'r, R> {
 }
 
 #[derive(Debug)]
-pub struct TrackMetadata {
+pub struct AudioMetadata {
+    pub channels: u16,
     pub bit_rate: u16,
     pub sample_rate: u32,
-    pub channels: u16,
 }
 
-pub fn get_sample_chan(
+pub fn create_sample_channel(
     path: PathBuf,
 ) -> (
     Receiver<impl cpal::Sample>,
     std::thread::JoinHandle<()>,
-    TrackMetadata,
+    AudioMetadata,
 ) {
     let track_file = std::fs::File::open(&path).expect("Unable to open track file");
     match path.extension() {
@@ -67,10 +75,10 @@ pub fn get_sample_chan(
             (
                 rx,
                 parse_thread,
-                TrackMetadata {
+                AudioMetadata {
+                    channels: meta.channels as u16,
                     bit_rate: meta.bits_per_sample as u16,
                     sample_rate: meta.sample_rate,
-                    channels: meta.channels as u16,
                 },
             )
         }
@@ -90,17 +98,13 @@ where
     I: cpal::Sample + Send + 'static,
     O: cpal::Sample,
 {
-    let mut idx = 0;
     let stream_chans = config.channels;
     device.build_output_stream(
         config,
-        move |data: &mut [O], conf: &cpal::OutputCallbackInfo| {
-            // debug!("callback idx {:?} buffer len {:?}", idx, data.len());
+        move |data: &mut [O], _conf: &cpal::OutputCallbackInfo| {
             for frame in data.chunks_mut(stream_chans as usize) {
                 for point in 0..channels {
                     frame[point] = cpal::Sample::from::<I>(&sample_chan.recv().unwrap());
-                    // println!("frame {:?}", frame[point]);
-                    idx += 1;
                 }
             }
         },
@@ -113,12 +117,8 @@ where
 
 use std::sync::mpsc::{Receiver, Sender};
 
-// FIXME rename fn
 // TODO this should return an error if the track is not available. update db?
-// TODO should this fn be async?
-// if db access is separated, it can be removed for sure
-// but are the async thread sleeping & fs calls worth it? tbd.
-pub fn play_track(track_path: PathBuf) -> (cpal::Stream, std::thread::JoinHandle<()>) {
+pub fn create_stream(source: PathBuf) -> (cpal::Stream, std::thread::JoinHandle<()>) {
     let host = cpal::default_host();
 
     let device = host
@@ -127,7 +127,7 @@ pub fn play_track(track_path: PathBuf) -> (cpal::Stream, std::thread::JoinHandle
 
     debug!("selected device {:?}", device.name().unwrap());
 
-    let (rx, parse_thread, metadata) = get_sample_chan(track_path);
+    let (rx, parse_thread, metadata) = create_sample_channel(source);
 
     println!("track meta {:?}", metadata);
 
@@ -165,10 +165,6 @@ pub fn play_track(track_path: PathBuf) -> (cpal::Stream, std::thread::JoinHandle
     }
     .unwrap();
 
-    stream.play().unwrap();
-
-    debug!("playing");
-
     (stream, parse_thread)
 }
 
@@ -179,28 +175,25 @@ pub enum StreamCommand {
     Stop,
 }
 pub struct AudioStream {
-    thread: std::thread::JoinHandle<()>,
     tx_stream: Sender<StreamCommand>,
+    _thread: std::thread::JoinHandle<()>,
 }
 
 impl AudioStream {
-    pub fn from_path(source_path: PathBuf) -> Self {
-        let (tx, rx) = std::sync::mpsc::channel();
-        // This was done because cpal::Stream is !Send, causing headaches upstream
+    pub fn from_path(source: PathBuf) -> Self {
+        // This implementation is as it is because cpal::Stream is !Send
         // Maybe there is a way to avoid this, but it seems it would require
         // keeping the stream on the main thread, which I'm not sure a lib
         // can guarantee.
 
-        // this still needs to be external via exposed API
-        // if self.stream_thread.is_some() {
-        //     self.tx_stream.as_ref().unwrap().send(StreamCommand::Stop);
-        // }
-
+        let (tx, rx) = std::sync::mpsc::channel();
         let thread = std::thread::spawn(move || {
-            // TODO thread should only last as long as duration of song
-            let (s, pt) = play_track(source_path);
+            let (s, _pt) = create_stream(source);
+            s.play().unwrap();
+
+            debug!("playing");
+
             while let Ok(res) = rx.recv() {
-                debug!("received command {:?}", &res);
                 match res {
                     StreamCommand::Pause => {
                         s.pause().unwrap();
@@ -219,7 +212,7 @@ impl AudioStream {
         });
 
         AudioStream {
-            thread,
+            _thread: thread,
             tx_stream: tx,
         }
     }
