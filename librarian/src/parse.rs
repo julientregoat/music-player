@@ -23,9 +23,9 @@ pub struct ParseResultBuilder {
     date: Option<String>,
     track: Option<String>,
     track_pos: Option<i32>,
-    channels: Option<i16>,
-    bit_rate: Option<i32>,
-    sample_rate: Option<i32>,
+    channels: Option<u16>,
+    bit_rate: Option<u16>,
+    sample_rate: Option<u32>,
 }
 
 // would be ideal to tie the builder to the path a bit more strongly, such that
@@ -69,15 +69,15 @@ impl ParseResultBuilder {
         self.track_pos = Some(t)
     }
 
-    pub fn channels(&mut self, c: i16) {
+    pub fn channels(&mut self, c: u16) {
         self.channels = Some(c)
     }
 
-    pub fn bit_rate(&mut self, b: i32) {
+    pub fn bit_rate(&mut self, b: u16) {
         self.bit_rate = Some(b)
     }
 
-    pub fn sample_rate(&mut self, s: i32) {
+    pub fn sample_rate(&mut self, s: u32) {
         self.sample_rate = Some(s)
     }
 
@@ -113,24 +113,12 @@ impl ParseResultBuilder {
             self.bit_rate,
             self.sample_rate,
         ) {
-            (
-                true,
-                Some(_),
-                Some(_),
-                Some(_),
-                Some(_),
-                Some(_),
-                Some(_),
-                Some(_),
-            ) => true,
+            (true, Some(_), Some(_), Some(_), Some(_), Some(_), Some(_), Some(_)) => true,
             _ => false,
         }
     }
 
-    pub fn complete(
-        mut self,
-        populate_unknown_fields: bool,
-    ) -> Option<ParseResult> {
+    pub fn complete(mut self, populate_unknown_fields: bool) -> Option<ParseResult> {
         if populate_unknown_fields {
             if self.artists.len() == 0 {
                 self.artist(UNKNOWN_ENTRY.to_owned());
@@ -164,24 +152,19 @@ impl ParseResultBuilder {
             self.bit_rate,
             self.sample_rate,
         ) {
-            (
-                true,
-                Some(album),
-                Some(track),
-                Some(channels),
-                Some(bit_rate),
-                Some(sample_rate),
-            ) => Some(ParseResult {
-                path: self.path,
-                artists: self.artists,
-                album,
-                date: self.date,
-                track,
-                track_pos: self.track_pos,
-                channels,
-                bit_rate,
-                sample_rate,
-            }),
+            (true, Some(album), Some(track), Some(channels), Some(bit_rate), Some(sample_rate)) => {
+                Some(ParseResult {
+                    path: self.path,
+                    artists: self.artists,
+                    album,
+                    date: self.date,
+                    track,
+                    track_pos: self.track_pos,
+                    channels,
+                    bit_rate,
+                    sample_rate,
+                })
+            }
             _ => {
                 warn!("ParseResultBuilder unable to complete");
                 None
@@ -200,9 +183,9 @@ pub struct ParseResult {
     pub date: Option<String>,
     pub track: String,
     pub track_pos: Option<i32>,
-    pub channels: i16,
-    pub bit_rate: i32,
-    pub sample_rate: i32,
+    pub channels: u16,
+    pub bit_rate: u16,
+    pub sample_rate: u32,
 }
 
 // TODO split out import file types - MP3 etc. can have a trait or enum impl?
@@ -233,9 +216,9 @@ pub fn parse_flac(p: PathBuf) -> Option<ParseResult> {
     );
 
     let file_info = reader.streaminfo();
-    builder.channels(file_info.channels as i16);
-    builder.bit_rate(file_info.bits_per_sample as i32);
-    builder.sample_rate(file_info.sample_rate as i32);
+    builder.channels(file_info.channels as u16);
+    builder.bit_rate(file_info.bits_per_sample as u16);
+    builder.sample_rate(file_info.sample_rate);
 
     for artist in reader.get_tag("artist") {
         builder.artist(artist.to_owned());
@@ -285,9 +268,9 @@ pub fn parse_wav(path: PathBuf) -> Option<ParseResult> {
         track: UNKNOWN_ENTRY.to_string(),
         date: None,
         track_pos: None,
-        channels: encoding.channels as i16,
-        bit_rate: encoding.bits_per_sample as i32,
-        sample_rate: encoding.sample_rate as i32,
+        channels: encoding.channels,
+        bit_rate: encoding.bits_per_sample,
+        sample_rate: encoding.sample_rate,
     })
 }
 
@@ -295,9 +278,7 @@ pub fn parse_mp3(path: PathBuf) -> Option<ParseResult> {
     trace!("parsing mp3 {:?}", &path);
     let mut builder = ParseResultBuilder::new(path);
 
-    let mut dec = match fs::File::open(builder.path())
-        .map(|f| minimp3::Decoder::new(f))
-    {
+    let mut dec = match fs::File::open(builder.path()).map(|f| minimp3::Decoder::new(f)) {
         Ok(f) => f,
         Err(e) => {
             error!("failed to read mp3 {:?} {:?}", builder, e);
@@ -313,11 +294,11 @@ pub fn parse_mp3(path: PathBuf) -> Option<ParseResult> {
         }
     };
 
-    builder.channels(f.channels as i16);
-    builder.sample_rate(f.sample_rate as i32);
+    builder.channels(f.channels as u16);
+    builder.sample_rate(f.sample_rate as u32);
     // TODO handle VBR; need to parse full file?
     // is there an easy way to detect?
-    builder.bit_rate(f.bitrate as i32);
+    builder.bit_rate(f.bitrate as u16);
 
     let path_str = match builder.path().to_str() {
         Some(p) => p,
