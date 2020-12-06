@@ -37,7 +37,6 @@ use playback::AudioStream;
 // - clean up duplicate tags if present
 // - library file name formatting - if copy to lib dir, how to structure?
 
-// pub fn parse_dir<P: AsRef<Path>>(
 pub fn parse_dir(
     tx: &tokio_mpsc::UnboundedSender<parse::ParseResult>,
     path: &Path,
@@ -61,105 +60,6 @@ pub fn parse_dir(
     }
 
     Ok(())
-}
-
-// FIXME why does tokio spawn require this fn to use tokio async chans?
-pub async fn import_dir(
-    pool: &SqlitePool,
-    import_to: &Path,
-    import_from: PathBuf,
-) -> Vec<models::DetailedTrack> {
-    // TODO try out sync channel buffered to ulimit -n
-    let (tx, mut rx) = tokio_mpsc::unbounded_channel();
-    let import_thread = std::thread::spawn(move || {
-        debug!("importing dir {:?}", import_from);
-        parse_dir(&tx, import_from.as_ref()).unwrap()
-    });
-
-    let fs_handle_limit = 20;
-    let mut copies = Vec::with_capacity(fs_handle_limit);
-    let mut idx = 0;
-    let mut imported_tracks = Vec::new();
-    while let Some(msg) = rx.recv().await {
-        debug!("copying idx {} {:?}", idx, msg);
-        // TODO need to change ParseResult.path if copied
-        // should this happen before it's saved? or becomes pathbuf either way
-        // should file handle be kept even instead of pathbuf? same reader
-
-        // TODO handle artist and album unknown
-        // is it crazy to store empty strings for unknown artist? seems cleaner.
-        // but that means needeing to check for empty strings to decide
-        // if a DIFFERENT placeholder (e.g. Unknown Artist) should be used for
-        // the path. it's a little messy.
-        // there should also be a difference btw a user naming an artist
-        // "Unknown Artist" and how the system internally handles the absence of a name
-        let mut track_path = import_to.join(&msg.artists[0]).join(&msg.album);
-
-        trace!("about to create dir if needed {:?}", &track_path);
-        match (track_path.exists(), track_path.is_dir()) {
-            (false, _) => fs::create_dir_all(&track_path).unwrap(),
-            (true, false) => panic!("target track dir exists but is not a dir"),
-            (true, true) => (),
-        };
-
-        track_path.push(&msg.path.file_name().unwrap());
-
-        if track_path.exists() {
-            // this should be impossible since SQL should catch it
-            // optionally skip dupes? log to user
-            error!("target track path exists, skipping import")
-        } else {
-            trace!("bout to copy file");
-            // TODO check fs handle limit with `ulimit -n`
-            // try to raise? need to figure out how many I can safely acquire
-            // TODO handle panics below - need to return future, maybe boxed?
-            // TODO should the copy happen before the import? why not concurrent?
-            // FIXME copy should be removed if db insert fails
-            copies.push(
-                async_fs::copy(msg.path.clone(), track_path)
-                    .then(|res| match res {
-                        Ok(_) => {
-                            debug!("getting lock");
-                            pool.acquire()
-                        }
-                        Err(e) => panic!("failed to copy track {:?}", e),
-                    })
-                    .then(|res| match res {
-                        Ok(c) => {
-                            debug!("importing to db {:?}", msg);
-                            models::import_from_parse_result(c, msg)
-                        }
-                        Err(e) => {
-                            panic!("failed to acquire conn {:?}", e);
-                        }
-                    }),
-            );
-            idx += 1;
-        }
-
-        if idx > (fs_handle_limit - 1) {
-            debug!("hit buf max copies, awaiting");
-            idx = 0;
-            // FIXME this appears pretty inefficient
-            // there needs to be a way to join futures directly from array
-            // check FuturesUnordered?
-            let mut imported = future::join_all(copies.drain(0..)).await;
-            imported_tracks.append(&mut imported);
-            debug!("finished awaiting copies");
-        }
-    }
-
-    debug!("channel closed");
-
-    import_thread.join().unwrap();
-    debug!("import thread joined");
-
-    // gotta be a way to do this in the loop?
-    let mut final_import = future::join_all(copies.drain(0..)).await;
-    imported_tracks.append(&mut final_import);
-    debug!("final copies futures joined");
-
-    imported_tracks
 }
 
 // TODO store library metadata somewhere. db? user editable config file may be >
@@ -226,6 +126,104 @@ impl Library {
             db_pool,
             stream: None,
         }
+    }
+
+    pub async fn import_dir(
+        &self,
+        import_to: &Path,
+        import_from: PathBuf,
+    ) -> Vec<models::DetailedTrack> {
+        // TODO try out sync channel buffered to ulimit -n
+        let (tx, mut rx) = tokio_mpsc::unbounded_channel();
+        let import_thread = std::thread::spawn(move || {
+            debug!("importing dir {:?}", import_from);
+            parse_dir(&tx, import_from.as_ref()).unwrap()
+        });
+
+        let fs_handle_limit = 20;
+        let mut copies = Vec::with_capacity(fs_handle_limit);
+        let mut idx = 0;
+        let mut imported_tracks = Vec::new();
+        while let Some(msg) = rx.recv().await {
+            debug!("copying idx {} {:?}", idx, msg);
+            // TODO need to change ParseResult.path if copied
+            // should this happen before it's saved? or becomes pathbuf either way
+            // should file handle be kept even instead of pathbuf? same reader
+
+            // TODO handle artist and album unknown
+            // is it crazy to store empty strings for unknown artist? seems cleaner.
+            // but that means needeing to check for empty strings to decide
+            // if a DIFFERENT placeholder (e.g. Unknown Artist) should be used for
+            // the path. it's a little messy.
+            // there should also be a difference btw a user naming an artist
+            // "Unknown Artist" and how the system internally handles the absence of a name
+            let mut track_path = import_to.join(&msg.artists[0]).join(&msg.album);
+
+            trace!("about to create dir if needed {:?}", &track_path);
+            match (track_path.exists(), track_path.is_dir()) {
+                (false, _) => fs::create_dir_all(&track_path).unwrap(),
+                (true, false) => panic!("target track dir exists but is not a dir"),
+                (true, true) => (),
+            };
+
+            track_path.push(&msg.path.file_name().unwrap());
+
+            if track_path.exists() {
+                // this should be impossible since SQL should catch it
+                // optionally skip dupes? log to user
+                error!("target track path exists, skipping import")
+            } else {
+                trace!("bout to copy file");
+                // TODO check fs handle limit with `ulimit -n`
+                // try to raise? need to figure out how many I can safely acquire
+                // TODO handle panics below - need to return future, maybe boxed?
+                // TODO should the copy happen before the import? why not concurrent?
+                // FIXME copy should be removed if db insert fails
+                copies.push(
+                    async_fs::copy(msg.path.clone(), track_path)
+                        .then(|res| match res {
+                            Ok(_) => {
+                                debug!("getting lock");
+                                self.db_pool.acquire()
+                            }
+                            Err(e) => panic!("failed to copy track {:?}", e),
+                        })
+                        .then(|res| match res {
+                            Ok(c) => {
+                                debug!("importing to db {:?}", msg);
+                                models::import_from_parse_result(c, msg)
+                            }
+                            Err(e) => {
+                                panic!("failed to acquire conn {:?}", e);
+                            }
+                        }),
+                );
+                idx += 1;
+            }
+
+            if idx > (fs_handle_limit - 1) {
+                debug!("hit buf max copies, awaiting");
+                idx = 0;
+                // FIXME this appears pretty inefficient
+                // there needs to be a way to join futures directly from array
+                // check FuturesUnordered?
+                let mut imported = future::join_all(copies.drain(0..)).await;
+                imported_tracks.append(&mut imported);
+                debug!("finished awaiting copies");
+            }
+        }
+
+        debug!("channel closed");
+
+        import_thread.join().unwrap();
+        debug!("import thread joined");
+
+        // gotta be a way to do this in the loop?
+        let mut final_import = future::join_all(copies.drain(0..)).await;
+        imported_tracks.append(&mut final_import);
+        debug!("final copies futures joined");
+
+        imported_tracks
     }
 
     pub async fn play_track(&mut self, track_id: i64) {

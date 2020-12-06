@@ -15,18 +15,13 @@ pub fn is_cpal_sample<I: NumCast + std::cmp::Eq>(val: I) -> bool {
     }
 }
 
-// GOALS
-// - I want to get an iterator with an item that meets the cpal::Sample interface
-// so I can collect samples into a vec
-// - needs to implement Send so it can be used cross thread
-
 trait SampleConvertIter<S: cpal::Sample>: Iterator {
     fn to_sample(val: Self::Item) -> S;
 }
 
 type FlacSampleIter<'r, R> = claxon::FlacSamples<&'r mut claxon::input::BufferedReader<R>>;
 
-// TODO this code should be able to be simplified once 24/32 bit support is impl
+// TODO this should be generically implemented when cpal gets 24/32 bit support
 // right now it'll break or sound incorrect for non 16 bit vals
 impl<'r, R: std::io::Read> SampleConvertIter<i16> for FlacSampleIter<'r, R> {
     fn to_sample(val: Result<i32, claxon::Error>) -> i16 {
@@ -115,7 +110,7 @@ where
     )
 }
 
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, SyncSender};
 
 // TODO this should return an error if the track is not available. update db?
 pub fn create_stream(source: PathBuf) -> (cpal::Stream, std::thread::JoinHandle<()>) {
@@ -151,7 +146,7 @@ pub fn create_stream(source: PathBuf) -> (cpal::Stream, std::thread::JoinHandle<
 
     let audio_chans = metadata.channels;
 
-    // CAREFUL: stream must be stored in a var before playback
+    // NB stream must be stored in a var before playback
     let stream = match output_format {
         cpal::SampleFormat::U16 => {
             get_output_stream::<u16, _>(&device, rx, &config, audio_chans as usize)
@@ -175,7 +170,7 @@ pub enum StreamCommand {
     Stop,
 }
 pub struct AudioStream {
-    tx_stream: Sender<StreamCommand>,
+    tx_stream: SyncSender<StreamCommand>,
     _thread: std::thread::JoinHandle<()>,
 }
 
@@ -186,7 +181,7 @@ impl AudioStream {
         // keeping the stream on the main thread, which I'm not sure a lib
         // can guarantee.
 
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = std::sync::mpsc::sync_channel(64);
         let thread = std::thread::spawn(move || {
             let (s, _pt) = create_stream(source);
             s.play().unwrap();
