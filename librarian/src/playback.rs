@@ -36,6 +36,14 @@ impl<'r, R: std::io::Read> SampleConvertIter<f32> for FlacSampleIter<'r, R> {
     }
 }
 
+impl<'r, R: std::io::Read, S: cpal::Sample + hound::Sample> SampleConvertIter<S>
+    for hound::WavSamples<'r, R, S>
+{
+    fn to_sample(val: Result<S, hound::Error>) -> S {
+        val.unwrap()
+    }
+}
+
 #[derive(Debug)]
 pub struct AudioMetadata {
     pub channels: u16,
@@ -53,7 +61,7 @@ pub fn create_sample_channel(
     let track_file = std::fs::File::open(&path).expect("Unable to open track file");
     match path.extension() {
         Some(e) if e == crate::parse::FLAC => {
-            let (tx, rx) = std::sync::mpsc::channel::<f32>();
+            let (tx, rx) = std::sync::mpsc::channel();
             println!("Got flac");
             let mut r = FlacReader::new(track_file).unwrap();
             println!("about to collect");
@@ -73,6 +81,43 @@ pub fn create_sample_channel(
                 AudioMetadata {
                     channels: meta.channels as u16,
                     bit_rate: meta.bits_per_sample as u16,
+                    sample_rate: meta.sample_rate,
+                },
+            )
+        }
+        Some(e) if e == crate::parse::WAV => {
+            println!("Got wav");
+            let mut r = hound::WavReader::new(track_file).unwrap();
+            println!("about to collect");
+
+            // TODO do I need to check for floats?
+            let meta = r.spec();
+            let (tx, rx) = match meta.bits_per_sample {
+                16 => std::sync::mpsc::channel(),
+                // 24 | 32 => std::sync::mpsc::channel::<i32>(),
+                _ => unimplemented!("no chans"),
+            };
+
+            let parse_thread = std::thread::spawn(move || {
+                for s in r.samples() {
+                    match meta.bits_per_sample {
+                        16 => tx
+                            .send(hound::WavSamples::<std::fs::File, i16>::to_sample(s))
+                            .unwrap(),
+                        // 24 | 32 => tx
+                        //     .send(hound::WavSamples::<std::fs::File, i32>::to_sample(s))
+                        //     .unwrap(),
+                        _ => unimplemented!("nope"),
+                    }
+                }
+            });
+
+            (
+                rx,
+                parse_thread,
+                AudioMetadata {
+                    channels: meta.channels,
+                    bit_rate: meta.bits_per_sample,
                     sample_rate: meta.sample_rate,
                 },
             )
