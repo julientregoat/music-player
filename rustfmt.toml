@@ -1,0 +1,6 @@
+max_width = 80
+tab_spaces = 4
+
+# nightly only
+# format_strings = true
+# fn_single_line = true
