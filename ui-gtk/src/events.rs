@@ -11,7 +11,9 @@ pub enum AppMsg {
     ImportedTracks(Vec<DetailedTrack>),
 }
 
-pub fn app_event_loop(app_state: AppStore) -> impl FnMut(AppMsg) -> glib::Continue {
+pub fn app_event_loop(
+    app_state: AppStore,
+) -> impl FnMut(AppMsg) -> glib::Continue {
     move |msg| {
         match msg {
             AppMsg::Tracklist(tracks) => {
@@ -67,10 +69,11 @@ pub async fn librarian_event_loop(
         match msg {
             LibraryMsg::RefreshTracklist => {
                 let mut conn = lib.db_pool.acquire().compat().await.unwrap();
-                let result = librarian::models::Track::get_all_detailed(&mut conn)
-                    .compat()
-                    .await
-                    .unwrap();
+                let result =
+                    librarian::models::Track::get_all_detailed(&mut conn)
+                        .compat()
+                        .await
+                        .unwrap();
                 {
                     app_chan.send(AppMsg::Tracklist(result)).unwrap();
                 }
@@ -82,7 +85,8 @@ pub async fn librarian_event_loop(
                     .import_dir(
                         // FIXME get lib path properly. should be determined via librarian
                         PathBuf::from(
-                            std::env::var("LIB_DIR").unwrap_or(String::from("./librariandemolib")),
+                            std::env::var("LIB_DIR")
+                                .unwrap_or(String::from("./librariandemolib")),
                         )
                         .as_path(),
                         path,

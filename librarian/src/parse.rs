@@ -113,12 +113,24 @@ impl ParseResultBuilder {
             self.bit_rate,
             self.sample_rate,
         ) {
-            (true, Some(_), Some(_), Some(_), Some(_), Some(_), Some(_), Some(_)) => true,
+            (
+                true,
+                Some(_),
+                Some(_),
+                Some(_),
+                Some(_),
+                Some(_),
+                Some(_),
+                Some(_),
+            ) => true,
             _ => false,
         }
     }
 
-    pub fn complete(mut self, populate_unknown_fields: bool) -> Option<ParseResult> {
+    pub fn complete(
+        mut self,
+        populate_unknown_fields: bool,
+    ) -> Option<ParseResult> {
         if populate_unknown_fields {
             if self.artists.len() == 0 {
                 self.artist(UNKNOWN_ENTRY.to_owned());
@@ -152,19 +164,24 @@ impl ParseResultBuilder {
             self.bit_rate,
             self.sample_rate,
         ) {
-            (true, Some(album), Some(track), Some(channels), Some(bit_rate), Some(sample_rate)) => {
-                Some(ParseResult {
-                    path: self.path,
-                    artists: self.artists,
-                    album,
-                    date: self.date,
-                    track,
-                    track_pos: self.track_pos,
-                    channels,
-                    bit_rate,
-                    sample_rate,
-                })
-            }
+            (
+                true,
+                Some(album),
+                Some(track),
+                Some(channels),
+                Some(bit_rate),
+                Some(sample_rate),
+            ) => Some(ParseResult {
+                path: self.path,
+                artists: self.artists,
+                album,
+                date: self.date,
+                track,
+                track_pos: self.track_pos,
+                channels,
+                bit_rate,
+                sample_rate,
+            }),
             _ => {
                 warn!("ParseResultBuilder unable to complete");
                 None
@@ -278,7 +295,9 @@ pub fn parse_mp3(path: PathBuf) -> Option<ParseResult> {
     trace!("parsing mp3 {:?}", &path);
     let mut builder = ParseResultBuilder::new(path);
 
-    let mut dec = match fs::File::open(builder.path()).map(|f| minimp3::Decoder::new(f)) {
+    let mut dec = match fs::File::open(builder.path())
+        .map(|f| minimp3::Decoder::new(f))
+    {
         Ok(f) => f,
         Err(e) => {
             error!("failed to read mp3 {:?} {:?}", builder, e);

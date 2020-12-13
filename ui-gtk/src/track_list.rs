@@ -1,9 +1,9 @@
 use gio::prelude::*;
 use glib::types::Type as GLibType;
 use gtk::{
-    prelude::*, CellRendererText, ListStore, PolicyType, ScrolledWindow, ScrolledWindowBuilder,
-    ShadowType, TreeView, TreeViewBuilder, TreeViewColumn, TreeViewColumnBuilder,
-    TreeViewGridLines,
+    prelude::*, CellRendererText, ListStore, PolicyType, ScrolledWindow,
+    ScrolledWindowBuilder, ShadowType, TreeView, TreeViewBuilder,
+    TreeViewColumn, TreeViewColumnBuilder, TreeViewGridLines,
 };
 use log::debug;
 
@@ -37,7 +37,8 @@ fn build_column(title: &str, pos: i32, is_visible: bool) -> TreeViewColumn {
 
 pub fn build_track_list() -> (ScrolledWindow, TreeView, ListStore) {
     // TODO is there a way to borrow these vals?
-    let (column_names, column_types): (Vec<_>, Vec<_>) = COLUMNS.iter().cloned().unzip();
+    let (column_names, column_types): (Vec<_>, Vec<_>) =
+        COLUMNS.iter().cloned().unzip();
 
     // for now, all cols are strings. not sure of benefits of other types anyway
     let list = ListStore::new(&column_types);

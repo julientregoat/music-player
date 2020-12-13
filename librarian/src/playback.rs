@@ -10,7 +10,11 @@ use std::path::PathBuf;
 pub fn is_cpal_sample<I: NumCast + std::cmp::Eq>(val: I) -> bool {
     match val {
         x if x == NumCast::from(16).unwrap() => true,
-        x if x == NumCast::from(24).unwrap() || x == NumCast::from(32).unwrap() => false,
+        x if x == NumCast::from(24).unwrap()
+            || x == NumCast::from(32).unwrap() =>
+        {
+            false
+        }
         _ => false,
     }
 }
@@ -19,7 +23,8 @@ trait SampleConvertIter<S: cpal::Sample>: Iterator {
     fn to_sample(val: Self::Item) -> S;
 }
 
-type FlacSampleIter<'r, R> = claxon::FlacSamples<&'r mut claxon::input::BufferedReader<R>>;
+type FlacSampleIter<'r, R> =
+    claxon::FlacSamples<&'r mut claxon::input::BufferedReader<R>>;
 
 // TODO this should be generically implemented when cpal gets 24/32 bit support
 // right now it'll break or sound incorrect for non 16 bit vals
@@ -58,7 +63,8 @@ pub fn create_sample_channel(
     std::thread::JoinHandle<()>,
     AudioMetadata,
 ) {
-    let track_file = std::fs::File::open(&path).expect("Unable to open track file");
+    let track_file =
+        std::fs::File::open(&path).expect("Unable to open track file");
     match path.extension() {
         Some(e) if e == crate::parse::FLAC => {
             let (tx, rx) = std::sync::mpsc::channel();
@@ -144,7 +150,8 @@ where
         move |data: &mut [O], _conf: &cpal::OutputCallbackInfo| {
             for frame in data.chunks_mut(stream_chans as usize) {
                 for point in 0..channels {
-                    frame[point] = cpal::Sample::from::<I>(&sample_chan.recv().unwrap());
+                    frame[point] =
+                        cpal::Sample::from::<I>(&sample_chan.recv().unwrap());
                 }
             }
         },
@@ -158,7 +165,9 @@ where
 use std::sync::mpsc::{Receiver, SyncSender};
 
 // TODO this should return an error if the track is not available. update db?
-pub fn create_stream(source: PathBuf) -> (cpal::Stream, std::thread::JoinHandle<()>) {
+pub fn create_stream(
+    source: PathBuf,
+) -> (cpal::Stream, std::thread::JoinHandle<()>) {
     let host = cpal::default_host();
 
     let device = host
@@ -193,15 +202,24 @@ pub fn create_stream(source: PathBuf) -> (cpal::Stream, std::thread::JoinHandle<
 
     // NB stream must be stored in a var before playback
     let stream = match output_format {
-        cpal::SampleFormat::U16 => {
-            get_output_stream::<u16, _>(&device, rx, &config, audio_chans as usize)
-        }
-        cpal::SampleFormat::I16 => {
-            get_output_stream::<i16, _>(&device, rx, &config, audio_chans as usize)
-        }
-        cpal::SampleFormat::F32 => {
-            get_output_stream::<f32, _>(&device, rx, &config, audio_chans as usize)
-        }
+        cpal::SampleFormat::U16 => get_output_stream::<u16, _>(
+            &device,
+            rx,
+            &config,
+            audio_chans as usize,
+        ),
+        cpal::SampleFormat::I16 => get_output_stream::<i16, _>(
+            &device,
+            rx,
+            &config,
+            audio_chans as usize,
+        ),
+        cpal::SampleFormat::F32 => get_output_stream::<f32, _>(
+            &device,
+            rx,
+            &config,
+            audio_chans as usize,
+        ),
     }
     .unwrap();
 

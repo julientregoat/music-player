@@ -157,12 +157,15 @@ impl Library {
             // the path. it's a little messy.
             // there should also be a difference btw a user naming an artist
             // "Unknown Artist" and how the system internally handles the absence of a name
-            let mut track_path = import_to.join(&msg.artists[0]).join(&msg.album);
+            let mut track_path =
+                import_to.join(&msg.artists[0]).join(&msg.album);
 
             trace!("about to create dir if needed {:?}", &track_path);
             match (track_path.exists(), track_path.is_dir()) {
                 (false, _) => fs::create_dir_all(&track_path).unwrap(),
-                (true, false) => panic!("target track dir exists but is not a dir"),
+                (true, false) => {
+                    panic!("target track dir exists but is not a dir")
+                }
                 (true, true) => (),
             };
 

@@ -1,7 +1,7 @@
 use gio::prelude::*;
 use gtk::{
-    prelude::*, Align, Button, ButtonBox, HeaderBar, HeaderBarBuilder, Orientation,
-    SearchEntryBuilder,
+    prelude::*, Align, Button, ButtonBox, HeaderBar, HeaderBarBuilder,
+    Orientation, SearchEntryBuilder,
 };
 
 use crate::events;
