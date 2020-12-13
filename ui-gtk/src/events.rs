@@ -86,7 +86,7 @@ pub async fn librarian_event_loop(
                         // FIXME get lib path properly. should be determined via librarian
                         PathBuf::from(
                             std::env::var("LIB_DIR")
-                                .unwrap_or(String::from("./librariandemolib")),
+                                .unwrap_or(String::from("./testaudiolib")),
                         )
                         .as_path(),
                         path,

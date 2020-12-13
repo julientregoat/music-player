@@ -7,6 +7,9 @@ target/
 
 .env
 
+testaudiolib
+
+
 # sqlite stuff
 *.db
 *.db-shm
