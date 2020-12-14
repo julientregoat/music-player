@@ -235,10 +235,6 @@ impl Library {
             .await
             .unwrap();
 
-        if !playback::is_cpal_sample(track.bit_rate) {
-            panic!("unsupported bitrate");
-        }
-
         let track_path = PathBuf::from(track.file_path);
 
         if self.stream.is_some() {

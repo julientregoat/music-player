@@ -7,18 +7,6 @@ use log::{debug, error};
 use num_traits::NumCast;
 use std::path::PathBuf;
 
-pub fn is_cpal_sample<I: NumCast + std::cmp::Eq>(val: I) -> bool {
-    match val {
-        x if x == NumCast::from(16).unwrap() => true,
-        x if x == NumCast::from(24).unwrap()
-            || x == NumCast::from(32).unwrap() =>
-        {
-            false
-        }
-        _ => false,
-    }
-}
-
 trait SampleConvertIter<S: cpal::Sample>: Iterator {
     fn to_sample(val: Self::Item) -> S;
 }
@@ -28,16 +16,15 @@ type FlacSampleIter<'r, R> =
 
 // TODO this should be generically implemented when cpal gets 24/32 bit support
 // right now it'll break or sound incorrect for non 16 bit vals
-impl<'r, R: std::io::Read> SampleConvertIter<i16> for FlacSampleIter<'r, R> {
-    fn to_sample(val: Result<i32, claxon::Error>) -> i16 {
-        val.unwrap() as i16
-    }
-}
+// impl<'r, R: std::io::Read> SampleConvertIter<i16> for FlacSampleIter<'r, R> {
+//     fn to_sample(val: Result<i32, claxon::Error>) -> i16 {
+//         val.unwrap() as i16
+//     }
+// }
 
 impl<'r, R: std::io::Read> SampleConvertIter<f32> for FlacSampleIter<'r, R> {
     fn to_sample(val: Result<i32, claxon::Error>) -> f32 {
-        let sample: i16 = FlacSampleIter::<R>::to_sample(val);
-        sample.to_f32()
+        (val.unwrap() as i16).to_f32()
     }
 }
 
@@ -56,30 +43,111 @@ pub struct AudioMetadata {
     pub sample_rate: u32,
 }
 
+// FIXME is there a cleaner way to do this?!??! or do I just need macros
+pub enum SampleReceiver {
+    I16(Receiver<i16>),
+    I32(Receiver<i32>),
+}
+
+fn flac_sample_chan_i16(
+    mut reader: FlacReader<std::fs::File>,
+) -> (SampleReceiver, std::thread::JoinHandle<()>) {
+    let (tx, rx) = std::sync::mpsc::channel::<i16>();
+    let parse_thread = std::thread::spawn(move || {
+        for s in reader.samples() {
+            tx.send(cpal::Sample::from::<i16>(&(s.unwrap() as i16)))
+                .unwrap();
+        }
+    });
+    (SampleReceiver::I16(rx), parse_thread)
+}
+
+fn flac_sample_chan_i24(
+    mut reader: FlacReader<std::fs::File>,
+) -> (SampleReceiver, std::thread::JoinHandle<()>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let parse_thread = std::thread::spawn(move || {
+        for s in reader.samples() {
+            let unpacked = cpal::Unpacked24::new(s.unwrap());
+            tx.send(cpal::Sample::from(&unpacked)).unwrap();
+        }
+    });
+    (SampleReceiver::I32(rx), parse_thread)
+}
+
+fn flac_sample_chan_i32(
+    mut reader: FlacReader<std::fs::File>,
+) -> (SampleReceiver, std::thread::JoinHandle<()>) {
+    let (tx, rx) = std::sync::mpsc::channel::<i32>();
+    let parse_thread = std::thread::spawn(move || {
+        for s in reader.samples() {
+            tx.send(cpal::Sample::from(&s.unwrap())).unwrap();
+        }
+    });
+    (SampleReceiver::I32(rx), parse_thread)
+}
+
+fn wav_sample_chan_i16(
+    mut reader: hound::WavReader<std::fs::File>,
+) -> (SampleReceiver, std::thread::JoinHandle<()>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let parse_thread = std::thread::spawn(move || {
+        for s in reader.samples() {
+            tx.send(hound::WavSamples::<std::fs::File, i16>::to_sample(s))
+                .unwrap()
+        }
+    });
+
+    (SampleReceiver::I16(rx), parse_thread)
+}
+
+fn wav_sample_chan_i24(
+    mut reader: hound::WavReader<std::fs::File>,
+) -> (SampleReceiver, std::thread::JoinHandle<()>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let parse_thread = std::thread::spawn(move || {
+        for s in reader.samples() {
+            tx.send(cpal::Sample::from(&cpal::Unpacked24::new(s.unwrap())))
+                .unwrap()
+        }
+    });
+
+    (SampleReceiver::I32(rx), parse_thread)
+}
+
+fn wav_sample_chan_i32(
+    mut reader: hound::WavReader<std::fs::File>,
+) -> (SampleReceiver, std::thread::JoinHandle<()>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let parse_thread = std::thread::spawn(move || {
+        for s in reader.samples() {
+            tx.send(hound::WavSamples::<std::fs::File, i32>::to_sample(s))
+                .unwrap()
+        }
+    });
+
+    (SampleReceiver::I32(rx), parse_thread)
+}
+
 pub fn create_sample_channel(
     path: PathBuf,
-) -> (
-    Receiver<impl cpal::Sample>,
-    std::thread::JoinHandle<()>,
-    AudioMetadata,
-) {
+) -> (SampleReceiver, std::thread::JoinHandle<()>, AudioMetadata) {
     let track_file =
         std::fs::File::open(&path).expect("Unable to open track file");
     match path.extension() {
         Some(e) if e == crate::parse::FLAC => {
-            let (tx, rx) = std::sync::mpsc::channel();
-            println!("Got flac");
+            debug!("Got flac");
             let mut r = FlacReader::new(track_file).unwrap();
-            println!("about to collect");
 
             let meta = r.streaminfo();
+            let br = meta.bits_per_sample as u16;
 
-            let parse_thread = std::thread::spawn(move || {
-                for s in r.samples() {
-                    tx.send(FlacSampleIter::<std::fs::File>::to_sample(s))
-                        .unwrap();
-                }
-            });
+            let (rx, parse_thread) = match br {
+                16 => flac_sample_chan_i16(r),
+                24 => flac_sample_chan_i24(r),
+                32 => flac_sample_chan_i32(r),
+                _ => unimplemented!("unsupported bitrate flac"),
+            };
 
             (
                 rx,
@@ -92,31 +160,17 @@ pub fn create_sample_channel(
             )
         }
         Some(e) if e == crate::parse::WAV => {
-            println!("Got wav");
+            debug!("Got wav");
             let mut r = hound::WavReader::new(track_file).unwrap();
-            println!("about to collect");
 
             // TODO do I need to check for floats?
             let meta = r.spec();
-            let (tx, rx) = match meta.bits_per_sample {
-                16 => std::sync::mpsc::channel(),
-                // 24 | 32 => std::sync::mpsc::channel::<i32>(),
-                _ => unimplemented!("no chans"),
+            let (rx, parse_thread) = match meta.bits_per_sample {
+                16 => wav_sample_chan_i16(r),
+                24 => wav_sample_chan_i24(r),
+                32 => wav_sample_chan_i32(r),
+                _ => unimplemented!("unsupported bitrate wav"),
             };
-
-            let parse_thread = std::thread::spawn(move || {
-                for s in r.samples() {
-                    match meta.bits_per_sample {
-                        16 => tx
-                            .send(hound::WavSamples::<std::fs::File, i16>::to_sample(s))
-                            .unwrap(),
-                        // 24 | 32 => tx
-                        //     .send(hound::WavSamples::<std::fs::File, i32>::to_sample(s))
-                        //     .unwrap(),
-                        _ => unimplemented!("nope"),
-                    }
-                }
-            });
 
             (
                 rx,
@@ -162,7 +216,8 @@ where
     )
 }
 
-use std::sync::mpsc::{Receiver, SyncSender};
+use std::cmp::Ordering;
+use std::sync::mpsc::{Receiver, Sender, SyncSender};
 
 // TODO this should return an error if the track is not available. update db?
 pub fn create_stream(
@@ -176,50 +231,103 @@ pub fn create_stream(
 
     debug!("selected device {:?}", device.name().unwrap());
 
-    let (rx, parse_thread, metadata) = create_sample_channel(source);
+    let (srx, parse_thread, metadata) = create_sample_channel(source);
 
     println!("track meta {:?}", metadata);
 
-    // TODO prioritize config w/ == channels, then >= channels, then < channels
-    let config_range = device
+    // TODO prioritize best bit rate that matches track bit rate
+    let mut config_range = device
         .supported_output_configs()
         .expect("error while querying configs")
         .find(|c| {
-            println!("device config {:?}", c);
             c.channels() == metadata.channels
                 && c.min_sample_rate().0 <= metadata.sample_rate
                 && c.max_sample_rate().0 >= metadata.sample_rate
+            // && c.sample_format() == cpal::SampleFormat::I24
         })
-        .expect("no matching config detected");
+        .expect("error getting valid config");
+
+    println!("chosen config {:?}", config_range);
 
     let output_format = config_range.sample_format();
+    let audio_chans = metadata.channels;
 
     let config = config_range
         .with_sample_rate(cpal::SampleRate(metadata.sample_rate))
         .config();
 
-    let audio_chans = metadata.channels;
-
+    // FIXME not thrilled about how messy this is... macro?
     // NB stream must be stored in a var before playback
-    let stream = match output_format {
-        cpal::SampleFormat::U16 => get_output_stream::<u16, _>(
-            &device,
-            rx,
-            &config,
-            audio_chans as usize,
-        ),
-        cpal::SampleFormat::I16 => get_output_stream::<i16, _>(
-            &device,
-            rx,
-            &config,
-            audio_chans as usize,
-        ),
-        cpal::SampleFormat::F32 => get_output_stream::<f32, _>(
-            &device,
-            rx,
-            &config,
-            audio_chans as usize,
-        ),
+    let stream = match (output_format, srx) {
+        (cpal::SampleFormat::U16, SampleReceiver::I16(rx)) => {
+            get_output_stream::<u16, _>(
+                &device,
+                rx,
+                &config,
+                audio_chans as usize,
+            )
+        }
+        (cpal::SampleFormat::U16, SampleReceiver::I32(rx)) => {
+            get_output_stream::<u16, _>(
+                &device,
+                rx,
+                &config,
+                audio_chans as usize,
+            )
+        }
+        (cpal::SampleFormat::I16, SampleReceiver::I16(rx)) => {
+            get_output_stream::<i16, _>(
+                &device,
+                rx,
+                &config,
+                audio_chans as usize,
+            )
+        }
+        (cpal::SampleFormat::I16, SampleReceiver::I32(rx)) => {
+            get_output_stream::<i16, _>(
+                &device,
+                rx,
+                &config,
+                audio_chans as usize,
+            )
+        }
+        (cpal::SampleFormat::I24, SampleReceiver::I32(rx))
+        | (cpal::SampleFormat::I32, SampleReceiver::I32(rx)) => {
+            println!("24/32 bit");
+            get_output_stream::<i32, _>(
+                &device,
+                rx,
+                &config,
+                audio_chans as usize,
+            )
+        }
+        (cpal::SampleFormat::I24, SampleReceiver::I16(rx))
+        | (cpal::SampleFormat::I32, SampleReceiver::I16(rx)) => {
+            println!("24/32 bit");
+            get_output_stream::<i32, _>(
+                &device,
+                rx,
+                &config,
+                audio_chans as usize,
+            )
+        }
+        // cpal::SampleFormat::I24 => unimplemented!("24 bit output unsupported"),
+        (cpal::SampleFormat::F32, SampleReceiver::I16(rx)) => {
+            get_output_stream::<f32, _>(
+                &device,
+                rx,
+                &config,
+                audio_chans as usize,
+            )
+        }
+        (cpal::SampleFormat::F32, SampleReceiver::I32(rx)) => {
+            get_output_stream::<f32, _>(
+                &device,
+                rx,
+                &config,
+                audio_chans as usize,
+            )
+        }
     }
     .unwrap();
 
