@@ -157,8 +157,11 @@ impl Library {
             // the path. it's a little messy.
             // there should also be a difference btw a user naming an artist
             // "Unknown Artist" and how the system internally handles the absence of a name
+            // FIXME conditionally import file based on user config
+            // otherwise skip path creation & copying
+            let import_target = import_to.canonicalize().unwrap();
             let mut track_path =
-                import_to.join(&msg.artists[0]).join(&msg.album);
+                import_target.join(&msg.artists[0]).join(&msg.album);
 
             trace!("about to create dir if needed {:?}", &track_path);
             match (track_path.exists(), track_path.is_dir()) {
@@ -169,6 +172,7 @@ impl Library {
                 (true, true) => (),
             };
 
+            // TODO probably use track name + number as track name? expose config
             track_path.push(&msg.path.file_name().unwrap());
 
             if track_path.exists() {
@@ -176,14 +180,16 @@ impl Library {
                 // optionally skip dupes? log to user
                 error!("target track path exists, skipping import")
             } else {
-                trace!("bout to copy file");
+                trace!("bout to copy file {:?}", &track_path);
+
+                // TODO conditionally copy to path
                 // TODO check fs handle limit with `ulimit -n`
                 // try to raise? need to figure out how many I can safely acquire
                 // TODO handle panics below - need to return future, maybe boxed?
                 // TODO should the copy happen before the import? why not concurrent?
                 // FIXME copy should be removed if db insert fails
                 copies.push(
-                    async_fs::copy(msg.path.clone(), track_path)
+                    async_fs::copy(msg.path.clone(), track_path.clone())
                         .then(|res| match res {
                             Ok(_) => {
                                 debug!("getting lock");
@@ -193,6 +199,9 @@ impl Library {
                         })
                         .then(|res| match res {
                             Ok(c) => {
+                                // store the newly copied path in the db
+                                let mut msg = msg;
+                                msg.path = track_path;
                                 debug!("importing to db {:?}", msg);
                                 models::import_from_parse_result(c, msg)
                             }
