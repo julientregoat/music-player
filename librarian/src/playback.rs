@@ -1,10 +1,9 @@
 use claxon::FlacReader;
 use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
-    Sample,
+    Sample, SupportedStreamConfigRange,
 };
 use log::{debug, error};
-use num_traits::NumCast;
 use std::path::PathBuf;
 
 trait SampleConvertIter<S: cpal::Sample>: Iterator {
@@ -36,6 +35,7 @@ impl<'r, R: std::io::Read, S: cpal::Sample + hound::Sample> SampleConvertIter<S>
     }
 }
 
+// may need cpal::SampleFormat prop or way to determine format is signed / float
 #[derive(Debug)]
 pub struct AudioMetadata {
     pub channels: u16,
@@ -137,7 +137,7 @@ pub fn create_sample_channel(
     match path.extension() {
         Some(e) if e == crate::parse::FLAC => {
             debug!("Got flac");
-            let mut r = FlacReader::new(track_file).unwrap();
+            let r = FlacReader::new(track_file).unwrap();
 
             let meta = r.streaminfo();
             let br = meta.bits_per_sample as u16;
@@ -161,9 +161,9 @@ pub fn create_sample_channel(
         }
         Some(e) if e == crate::parse::WAV => {
             debug!("Got wav");
-            let mut r = hound::WavReader::new(track_file).unwrap();
+            let r = hound::WavReader::new(track_file).unwrap();
 
-            // TODO do I need to check for floats?
+            // TODO check for 32 bit floats? need to support in AudioMetadata
             let meta = r.spec();
             let (rx, parse_thread) = match meta.bits_per_sample {
                 16 => wav_sample_chan_i16(r),
@@ -183,7 +183,7 @@ pub fn create_sample_channel(
             )
         }
         x => {
-            unimplemented!("got other thing not supported yet {:?}", x);
+            unimplemented!("unsupported format {:?}", x);
         }
     }
 }
@@ -216,8 +216,37 @@ where
     )
 }
 
-use std::cmp::Ordering;
-use std::sync::mpsc::{Receiver, Sender, SyncSender};
+use std::sync::mpsc::{Receiver, SyncSender};
+
+fn get_config_score(
+    input_meta: &AudioMetadata,
+    config: &SupportedStreamConfigRange,
+) -> u16 {
+    // +2 has exactly right number of channels
+    // +1 has more channels than needed
+    // 0 has less channels than needed
+    let channel_score = match (input_meta.channels, config.channels()) {
+        (i, o) if i == o => 2,
+        (i, o) if i < o => 1,
+        _ => 0,
+    };
+
+    // +2 input audio requires no conversion to output format
+    // +1 input audio requires lossless conversion
+    // 0 audio requires lossy conversion
+    let format_score = match (input_meta.bit_rate, config.sample_format()) {
+        (i, o)
+            if (i == 16 && o == cpal::SampleFormat::I16)
+                || (i == 24 && o == cpal::SampleFormat::I24)
+                || (i == 32 && o == cpal::SampleFormat::I32) =>
+        {
+            2
+        }
+        _ => 0,
+    };
+
+    channel_score + format_score
+}
 
 // TODO this should return an error if the track is not available. update db?
 pub fn create_stream(
@@ -231,34 +260,43 @@ pub fn create_stream(
 
     debug!("selected device {:?}", device.name().unwrap());
 
-    let (srx, parse_thread, metadata) = create_sample_channel(source);
+    let (sample_rx, parse_thread, input_meta) = create_sample_channel(source);
 
-    println!("track meta {:?}", metadata);
+    println!("track meta {:?}", input_meta);
 
-    // TODO prioritize best bit rate that matches track bit rate
-    let mut config_range = device
+    let mut sorted_configs = device
         .supported_output_configs()
         .expect("error while querying configs")
-        .find(|c| {
-            c.channels() == metadata.channels
-                && c.min_sample_rate().0 <= metadata.sample_rate
-                && c.max_sample_rate().0 >= metadata.sample_rate
-            // && c.sample_format() == cpal::SampleFormat::I24
+        .filter(|c| {
+            c.channels() > 0
+                && c.min_sample_rate().0 <= input_meta.sample_rate
+                && c.max_sample_rate().0 >= input_meta.sample_rate
         })
-        .expect("error getting valid config");
+        .collect::<Vec<_>>();
+
+    sorted_configs.sort_by(|a, b| {
+        let a_score = get_config_score(&input_meta, a);
+        let b_score = get_config_score(&input_meta, b);
+        a_score.cmp(&b_score)
+    });
+
+    if sorted_configs.len() == 0 {
+        panic!("no valid config available");
+    }
+
+    let config_range = sorted_configs[0].clone();
 
     println!("chosen config {:?}", config_range);
 
     let output_format = config_range.sample_format();
-    let audio_chans = metadata.channels;
+    let audio_chans = input_meta.channels;
 
     let config = config_range
-        .with_sample_rate(cpal::SampleRate(metadata.sample_rate))
+        .with_sample_rate(cpal::SampleRate(input_meta.sample_rate))
         .config();
 
     // FIXME not thrilled about how messy this is... macro?
-    // NB stream must be stored in a var before playback
-    let stream = match (output_format, srx) {
+    let stream = match (output_format, sample_rx) {
         (cpal::SampleFormat::U16, SampleReceiver::I16(rx)) => {
             get_output_stream::<u16, _>(
                 &device,
