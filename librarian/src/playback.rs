@@ -3,7 +3,7 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
     Sample, SupportedStreamConfigRange,
 };
-use log::{debug, error};
+use log::{debug, error, trace};
 use std::path::PathBuf;
 
 trait SampleConvertIter<S: cpal::Sample>: Iterator {
@@ -234,14 +234,20 @@ where
         move |data: &mut [O], _conf: &cpal::OutputCallbackInfo| {
             for frame in data.chunks_mut(stream_chans as usize) {
                 for point in 0..channels {
-                    frame[point] =
-                        cpal::Sample::from::<I>(&sample_chan.recv().unwrap());
+                    match sample_chan.recv() {
+                        Ok(s) => {
+                            frame[point] = cpal::Sample::from::<I>(&s);
+                        }
+                        Err(e) => {
+                            trace!("output channel closed {:?}", e);
+                        }
+                    };
                 }
             }
         },
         move |err| {
-            // TODO
-            error!("err {:?}", err);
+            // TODO proper handling
+            error!("err output stream {:?}", err);
         },
     )
 }
@@ -326,6 +332,9 @@ pub fn create_stream(
         Some(c) => c,
         None => panic!("no valid configs available"),
     };
+
+    debug!("chosen config {:?}", config_range);
+
     let output_format = config_range.sample_format();
     let audio_chans = input_meta.channels;
 
