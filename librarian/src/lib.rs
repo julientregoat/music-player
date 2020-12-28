@@ -8,7 +8,6 @@ extern crate log;
 extern crate aiff;
 extern crate cpal;
 extern crate minimp3;
-extern crate num_traits;
 extern crate rtag; // TODO use id3
 extern crate sqlx;
 

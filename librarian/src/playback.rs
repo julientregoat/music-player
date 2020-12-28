@@ -290,7 +290,7 @@ pub fn create_stream(
         a_score.cmp(&b_score)
     });
 
-    debug!("sorted configs {:?}", sorted_configs);
+    // debug!("sorted configs {:?}", sorted_configs);
 
     let config_range = match sorted_configs.pop() {
         Some(c) => c,
@@ -339,7 +339,7 @@ pub fn create_stream(
         }
         (cpal::SampleFormat::I24, SampleReceiver::I32(rx))
         | (cpal::SampleFormat::I32, SampleReceiver::I32(rx)) => {
-            println!("24/32 bit");
+            println!("32 bit in 24/32 bit");
             get_output_stream::<i32, _>(
                 &device,
                 rx,
@@ -349,7 +349,7 @@ pub fn create_stream(
         }
         (cpal::SampleFormat::I24, SampleReceiver::I16(rx))
         | (cpal::SampleFormat::I32, SampleReceiver::I16(rx)) => {
-            println!("24/32 bit");
+            println!("16 bit in 24/32 bit out");
             get_output_stream::<i32, _>(
                 &device,
                 rx,
