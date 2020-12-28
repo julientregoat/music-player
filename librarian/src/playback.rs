@@ -218,6 +218,7 @@ where
 
 use std::sync::mpsc::{Receiver, SyncSender};
 
+// FIXME account for U16/U32 i/o -- needs to be accomodated in AudioMetadata
 fn get_config_score(
     input_meta: &AudioMetadata,
     config: &SupportedStreamConfigRange,
@@ -232,8 +233,8 @@ fn get_config_score(
     };
 
     // +2 input audio requires no conversion to output format
-    // +1 input audio requires lossless conversion
-    // 0 audio requires lossy conversion
+    // +1 input audio requires upcast (ideally lossless but prob lossy)
+    // 0 audio requires downcast (lossy)
     let format_score = match (input_meta.bit_rate, config.sample_format()) {
         (i, o)
             if (i == 16 && o == cpal::SampleFormat::I16)
@@ -241,6 +242,15 @@ fn get_config_score(
                 || (i == 32 && o == cpal::SampleFormat::I32) =>
         {
             2
+        }
+        (i, o)
+            if (i == 16
+                && (o == cpal::SampleFormat::I24
+                    || o == cpal::SampleFormat::I32
+                    || o == cpal::SampleFormat::F32))
+                || (i == 24 && (o == cpal::SampleFormat::I32)) =>
+        {
+            1
         }
         _ => 0,
     };
@@ -262,7 +272,7 @@ pub fn create_stream(
 
     let (sample_rx, parse_thread, input_meta) = create_sample_channel(source);
 
-    println!("track meta {:?}", input_meta);
+    debug!("selected track meta {:?}", input_meta);
 
     let mut sorted_configs = device
         .supported_output_configs()
@@ -280,14 +290,12 @@ pub fn create_stream(
         a_score.cmp(&b_score)
     });
 
-    if sorted_configs.len() == 0 {
-        panic!("no valid config available");
-    }
+    debug!("sorted configs {:?}", sorted_configs);
 
-    let config_range = sorted_configs[0].clone();
-
-    println!("chosen config {:?}", config_range);
-
+    let config_range = match sorted_configs.pop() {
+        Some(c) => c,
+        None => panic!("no valid configs available"),
+    };
     let output_format = config_range.sample_format();
     let audio_chans = input_meta.channels;
 
