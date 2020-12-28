@@ -39,7 +39,7 @@ impl<'r, R: std::io::Read, S: cpal::Sample + hound::Sample> SampleConvertIter<S>
 #[derive(Debug)]
 pub struct AudioMetadata {
     pub channels: u16,
-    pub bit_rate: u16,
+    pub bit_depth: u16,
     pub sample_rate: u32,
 }
 
@@ -167,7 +167,7 @@ pub fn create_sample_channel(
                 parse_thread,
                 AudioMetadata {
                     channels: meta.channels as u16,
-                    bit_rate: meta.bits_per_sample as u16,
+                    bit_depth: meta.bits_per_sample as u16,
                     sample_rate: meta.sample_rate,
                 },
             )
@@ -190,7 +190,7 @@ pub fn create_sample_channel(
                 parse_thread,
                 AudioMetadata {
                     channels: meta.channels,
-                    bit_rate: meta.bits_per_sample,
+                    bit_depth: meta.bits_per_sample,
                     sample_rate: meta.sample_rate,
                 },
             )
@@ -207,7 +207,7 @@ pub fn create_sample_channel(
                 AudioMetadata {
                     channels: frame_meta.channels as u16,
                     // convert kbits/sec to bits/sample(?)? or is it only i16?
-                    bit_rate: 16,
+                    bit_depth: 16,
                     sample_rate: frame_meta.sample_rate as u32,
                 },
             )
@@ -265,7 +265,7 @@ fn get_config_score(
     // +2 input audio requires no conversion to output format
     // +1 input audio requires upcast (ideally lossless but prob lossy)
     // 0 audio requires downcast (lossy)
-    let format_score = match (input_meta.bit_rate, config.sample_format()) {
+    let format_score = match (input_meta.bit_depth, config.sample_format()) {
         (i, o)
             if (i == 16 && o == cpal::SampleFormat::I16)
                 || (i == 24 && o == cpal::SampleFormat::I24)

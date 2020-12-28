@@ -180,7 +180,7 @@ pub struct Track {
     pub file_path: String,
     pub channels: i64,
     pub sample_rate: i64,
-    pub bit_rate: i64,
+    pub bit_depth: i64,
     pub track_num: Option<i64>,
     pub tags: String,     // TODO parse to array
     pub created: String,  // TODO parse date
@@ -198,7 +198,7 @@ pub struct DetailedTrack {
     pub file_path: String,
     pub channels: i64,
     pub sample_rate: i64,
-    pub bit_rate: i64,
+    pub bit_depth: i64,
     pub track_num: Option<i64>,
     pub tags: String,     // TODO parse to array
     pub created: String,  // TODO parse date
@@ -213,12 +213,12 @@ impl Track {
         file_path: &str,
         channels: i64,
         sample_rate: i64,
-        bit_rate: i64,
+        bit_depth: i64,
         track_num: Option<i64>,
     ) -> Result<i64, sqlx::Error> {
         let track_id = sqlx::query(
             "INSERT INTO tracks
-            (name, release_id, file_path, channels, sample_rate, bit_rate, track_num)
+            (name, release_id, file_path, channels, sample_rate, bit_depth, track_num)
             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(name)
@@ -226,7 +226,7 @@ impl Track {
         .bind(file_path)
         .bind(channels)
         .bind(sample_rate)
-        .bind(bit_rate)
+        .bind(bit_depth)
         .bind(track_num)
         .execute(conn.borrow_mut())
         .await?
@@ -264,7 +264,7 @@ impl Track {
                 tracks.file_path,
                 tracks.channels,
                 tracks.sample_rate,
-                tracks.bit_rate,
+                tracks.bit_depth,
                 tracks.track_num,
                 tracks.tags,
                 tracks.created,
@@ -323,7 +323,7 @@ impl Track {
                 file_path: track.file_path,
                 channels: track.channels,
                 sample_rate: track.sample_rate,
-                bit_rate: track.bit_rate,
+                bit_depth: track.bit_depth,
                 track_num: track.track_num,
                 tags: track.tags,
                 created: track.created,
@@ -383,7 +383,7 @@ pub async fn import_from_parse_result(
         metadata.path.to_str().unwrap(), // TODO
         metadata.channels as i64,
         metadata.sample_rate as i64,
-        metadata.bit_rate as i64,
+        metadata.bit_depth as i64,
         metadata.track_pos.map(|pos| pos as i64),
     )
     .await
@@ -412,7 +412,7 @@ pub async fn import_from_parse_result(
         file_path: t.file_path,
         channels: t.channels,
         sample_rate: t.sample_rate,
-        bit_rate: t.bit_rate,
+        bit_depth: t.bit_depth,
         track_num: t.track_num,
         tags: t.tags,
         created: t.created,

@@ -27,7 +27,7 @@ CREATE TABLE tracks (
   file_path TEXT UNIQUE NOT NULL,
   channels INTEGER NOT NULL,
   sample_rate INTEGER NOT NULL,
-  bit_rate INTEGER NOT NULL,
+  bit_depth INTEGER NOT NULL,
   track_num INTEGER NULL,
   -- TODO determine default empty array value or alternate encoding method
   tags TEXT NOT NULL DEFAULT '',
