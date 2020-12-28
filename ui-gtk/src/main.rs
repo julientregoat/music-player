@@ -27,7 +27,7 @@ fn build_ui(
 
     window.set_title("music player");
     // window.set_border_width(1);
-    window.set_position(gtk::WindowPosition::Mouse);
+    window.set_position(gtk::WindowPosition::CenterOnParent);
     window.set_default_size(600, 400);
 
     let header = header::build_header(lib_chan.clone());

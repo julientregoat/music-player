@@ -129,6 +129,21 @@ fn wav_sample_chan_i32(
     (SampleReceiver::I32(rx), parse_thread)
 }
 
+fn mp3_sample_chan_i16(
+    mut reader: minimp3::Decoder<std::fs::File>,
+) -> (SampleReceiver, std::thread::JoinHandle<()>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let parse_thread = std::thread::spawn(move || {
+        while let Ok(f) = reader.next_frame() {
+            for s in f.data {
+                tx.send(s).unwrap()
+            }
+        }
+    });
+
+    (SampleReceiver::I16(rx), parse_thread)
+}
+
 pub fn create_sample_channel(
     path: PathBuf,
 ) -> (SampleReceiver, std::thread::JoinHandle<()>, AudioMetadata) {
@@ -140,9 +155,7 @@ pub fn create_sample_channel(
             let r = FlacReader::new(track_file).unwrap();
 
             let meta = r.streaminfo();
-            let br = meta.bits_per_sample as u16;
-
-            let (rx, parse_thread) = match br {
+            let (rx, parse_thread) = match meta.bits_per_sample as u16 {
                 16 => flac_sample_chan_i16(r),
                 24 => flac_sample_chan_i24(r),
                 32 => flac_sample_chan_i32(r),
@@ -179,6 +192,23 @@ pub fn create_sample_channel(
                     channels: meta.channels,
                     bit_rate: meta.bits_per_sample,
                     sample_rate: meta.sample_rate,
+                },
+            )
+        }
+        Some(e) if e == crate::parse::MP3 => {
+            let mut r = minimp3::Decoder::new(track_file);
+            // FIXME losing first frame to get sample rate
+            let frame_meta = r.next_frame().unwrap();
+
+            let (rx, parse_thread) = mp3_sample_chan_i16(r);
+            (
+                rx,
+                parse_thread,
+                AudioMetadata {
+                    channels: frame_meta.channels as u16,
+                    // convert kbits/sec to bits/sample(?)? or is it only i16?
+                    bit_rate: 16,
+                    sample_rate: frame_meta.sample_rate as u32,
                 },
             )
         }
