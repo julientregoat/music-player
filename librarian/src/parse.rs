@@ -315,8 +315,8 @@ pub fn parse_mp3(path: PathBuf) -> Option<ParseResult> {
 
     builder.channels(f.channels as u16);
     builder.sample_rate(f.sample_rate as u32);
-    // FIXME how to get bit depths of an mp3?
-    builder.bit_depth(f.bitrate as u16);
+    // TODO what to input? mp3 bit depth is lost in the process
+    builder.bit_depth(0);
 
     let path_str = match builder.path().to_str() {
         Some(p) => p,

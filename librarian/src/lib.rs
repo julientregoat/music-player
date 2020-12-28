@@ -10,6 +10,7 @@ extern crate cpal;
 extern crate minimp3;
 extern crate rtag; // TODO use id3
 extern crate sqlx;
+// extern crate directories;
 
 use futures::future::{self, FutureExt};
 use log::{debug, error, info, trace};
@@ -143,12 +144,10 @@ impl Library {
         let mut copies = Vec::with_capacity(fs_handle_limit);
         let mut idx = 0;
         let mut imported_tracks = Vec::new();
+        // FIXME if cannot be canoniclized, it doesn't exist
+        let import_target = import_to.canonicalize().unwrap();
         while let Some(msg) = rx.recv().await {
             debug!("copying idx {} {:?}", idx, msg);
-            // TODO need to change ParseResult.path if copied
-            // should this happen before it's saved? or becomes pathbuf either way
-            // should file handle be kept even instead of pathbuf? same reader
-
             // TODO handle artist and album unknown
             // is it crazy to store empty strings for unknown artist? seems cleaner.
             // but that means needeing to check for empty strings to decide
@@ -158,13 +157,14 @@ impl Library {
             // "Unknown Artist" and how the system internally handles the absence of a name
             // FIXME conditionally import file based on user config
             // otherwise skip path creation & copying
-            let import_target = import_to.canonicalize().unwrap();
-            let mut track_path =
-                import_target.join(&msg.artists[0]).join(&msg.album);
+            println!("import to {:?}", import_to);
 
-            trace!("about to create dir if needed {:?}", &track_path);
-            match (track_path.exists(), track_path.is_dir()) {
-                (false, _) => fs::create_dir_all(&track_path).unwrap(),
+            let mut release_path = import_target.join(&msg.artists[0]);
+            release_path.push(&msg.album);
+
+            trace!("about to create dir if needed {:?}", &release_path);
+            match (release_path.exists(), release_path.is_dir()) {
+                (false, _) => fs::create_dir_all(&release_path).unwrap(),
                 (true, false) => {
                     panic!("target track dir exists but is not a dir")
                 }
@@ -172,9 +172,13 @@ impl Library {
             };
 
             // TODO probably use track name + number as track name? expose config
+            let mut track_path = release_path;
             track_path.push(&msg.path.file_name().unwrap());
 
             if track_path.exists() {
+                // FIXME if msg.path (source location) == track_path
+                // then proceed without error - audio file is in right place
+
                 // this should be impossible since SQL should catch it
                 // optionally skip dupes? log to user
                 error!("target track path exists, skipping import")
