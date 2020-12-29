@@ -10,31 +10,6 @@ trait SampleConvertIter<S: cpal::Sample>: Iterator {
     fn to_sample(val: Self::Item) -> S;
 }
 
-type FlacSampleIter<'r, R> =
-    claxon::FlacSamples<&'r mut claxon::input::BufferedReader<R>>;
-
-// TODO this should be generically implemented when cpal gets 24/32 bit support
-// right now it'll break or sound incorrect for non 16 bit vals
-// impl<'r, R: std::io::Read> SampleConvertIter<i16> for FlacSampleIter<'r, R> {
-//     fn to_sample(val: Result<i32, claxon::Error>) -> i16 {
-//         val.unwrap() as i16
-//     }
-// }
-
-impl<'r, R: std::io::Read> SampleConvertIter<f32> for FlacSampleIter<'r, R> {
-    fn to_sample(val: Result<i32, claxon::Error>) -> f32 {
-        (val.unwrap() as i16).to_f32()
-    }
-}
-
-impl<'r, R: std::io::Read, S: cpal::Sample + hound::Sample> SampleConvertIter<S>
-    for hound::WavSamples<'r, R, S>
-{
-    fn to_sample(val: Result<S, hound::Error>) -> S {
-        val.unwrap()
-    }
-}
-
 // may need cpal::SampleFormat prop or way to determine format is signed / float
 #[derive(Debug)]
 pub struct AudioMetadata {
@@ -43,92 +18,95 @@ pub struct AudioMetadata {
     pub sample_rate: u32,
 }
 
-// FIXME is there a cleaner way to do this?!??! or do I just need macros
 pub enum SampleReceiver {
     I16(Receiver<i16>),
     I32(Receiver<i32>),
 }
 
-fn flac_sample_chan_i16(
-    mut reader: FlacReader<std::fs::File>,
-) -> (SampleReceiver, std::thread::JoinHandle<()>) {
-    let (tx, rx) = std::sync::mpsc::channel::<i16>();
-    let parse_thread = std::thread::spawn(move || {
-        for s in reader.samples() {
-            tx.send(cpal::Sample::from::<i16>(&(s.unwrap() as i16)))
-                .unwrap();
-        }
-    });
-    (SampleReceiver::I16(rx), parse_thread)
+impl From<Receiver<i16>> for SampleReceiver {
+    fn from(rx: Receiver<i16>) -> SampleReceiver {
+        SampleReceiver::I16(rx)
+    }
 }
 
-fn flac_sample_chan_i24(
-    mut reader: FlacReader<std::fs::File>,
-) -> (SampleReceiver, std::thread::JoinHandle<()>) {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let parse_thread = std::thread::spawn(move || {
-        for s in reader.samples() {
-            let unpacked = cpal::Unpacked24::new(s.unwrap());
-            tx.send(cpal::Sample::from(&unpacked)).unwrap();
-        }
-    });
-    (SampleReceiver::I32(rx), parse_thread)
+impl From<Receiver<i32>> for SampleReceiver {
+    fn from(rx: Receiver<i32>) -> SampleReceiver {
+        SampleReceiver::I32(rx)
+    }
 }
 
-fn flac_sample_chan_i32(
-    mut reader: FlacReader<std::fs::File>,
-) -> (SampleReceiver, std::thread::JoinHandle<()>) {
-    let (tx, rx) = std::sync::mpsc::channel::<i32>();
-    let parse_thread = std::thread::spawn(move || {
-        for s in reader.samples() {
-            tx.send(cpal::Sample::from(&s.unwrap())).unwrap();
+macro_rules! sample_channel_generator {
+    ($fn_name:ident, $Reader:ty, $SamplePrimitive:ty, $transform:expr) => {
+        pub fn $fn_name(
+            mut reader: $Reader,
+        ) -> (SampleReceiver, std::thread::JoinHandle<()>) {
+            let (tx, rx) = std::sync::mpsc::channel::<$SamplePrimitive>();
+            let parse_thread = std::thread::spawn(move || {
+                // TODO need internal common trait for sample iter fn
+                for s in reader.samples() {
+                    let s: $SamplePrimitive = $transform(s);
+                    match tx.send(s) {
+                        Ok(_) => (),
+                        Err(e) => {
+                            println!("sample tx chan closed {:?}", e);
+                            break;
+                            // debug!("sample tx channel closed {:?}", e);
+                        }
+                    }
+                }
+            });
+
+            (rx.into(), parse_thread)
         }
-    });
-    (SampleReceiver::I32(rx), parse_thread)
+    };
 }
 
-fn wav_sample_chan_i16(
-    mut reader: hound::WavReader<std::fs::File>,
-) -> (SampleReceiver, std::thread::JoinHandle<()>) {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let parse_thread = std::thread::spawn(move || {
-        for s in reader.samples() {
-            tx.send(hound::WavSamples::<std::fs::File, i16>::to_sample(s))
-                .unwrap()
-        }
-    });
+sample_channel_generator!(
+    flac_sample_chan_i16,
+    FlacReader<std::fs::File>,
+    i16,
+    |x: Result<i32, claxon::Error>| x.unwrap() as i16
+);
 
-    (SampleReceiver::I16(rx), parse_thread)
-}
+// FIXME should this return the unscaled i32?
+sample_channel_generator!(
+    flac_sample_chan_i24,
+    FlacReader<std::fs::File>,
+    i32,
+    |x: Result<i32, claxon::Error>| cpal::Unpacked24::new(x.unwrap()).to_i32()
+);
 
-fn wav_sample_chan_i24(
-    mut reader: hound::WavReader<std::fs::File>,
-) -> (SampleReceiver, std::thread::JoinHandle<()>) {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let parse_thread = std::thread::spawn(move || {
-        for s in reader.samples() {
-            tx.send(cpal::Sample::from(&cpal::Unpacked24::new(s.unwrap())))
-                .unwrap()
-        }
-    });
+sample_channel_generator!(
+    flac_sample_chan_i32,
+    FlacReader<std::fs::File>,
+    i32,
+    |x: Result<i32, claxon::Error>| x.unwrap()
+);
 
-    (SampleReceiver::I32(rx), parse_thread)
-}
+sample_channel_generator!(
+    wav_sample_chan_i16,
+    hound::WavReader<std::fs::File>,
+    i16,
+    |x: Result<i16, hound::Error>| x.unwrap()
+);
 
-fn wav_sample_chan_i32(
-    mut reader: hound::WavReader<std::fs::File>,
-) -> (SampleReceiver, std::thread::JoinHandle<()>) {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let parse_thread = std::thread::spawn(move || {
-        for s in reader.samples() {
-            tx.send(hound::WavSamples::<std::fs::File, i32>::to_sample(s))
-                .unwrap()
-        }
-    });
+// TODO validate 24 bit wav playback
+sample_channel_generator!(
+    wav_sample_chan_i24,
+    hound::WavReader<std::fs::File>,
+    i32,
+    |x: Result<i32, hound::Error>| cpal::Unpacked24::new(x.unwrap()).to_i32()
+);
 
-    (SampleReceiver::I32(rx), parse_thread)
-}
+sample_channel_generator!(
+    wav_sample_chan_i32,
+    hound::WavReader<std::fs::File>,
+    i32,
+    |x: Result<i32, hound::Error>| x.unwrap()
+);
 
+// FIXME this can be replaced with a macro once there is common iter trait
+// hound + claxon both have the `samples` fn available to iter thru samples
 fn mp3_sample_chan_i16(
     mut reader: minimp3::Decoder<std::fs::File>,
 ) -> (SampleReceiver, std::thread::JoinHandle<()>) {
@@ -136,7 +114,14 @@ fn mp3_sample_chan_i16(
     let parse_thread = std::thread::spawn(move || {
         while let Ok(f) = reader.next_frame() {
             for s in f.data {
-                tx.send(s).unwrap()
+                match tx.send(s) {
+                    Ok(_) => (),
+                    Err(e) => {
+                        println!("sample tx chan closed {:?}", e);
+                        break;
+                        // debug!("sample tx channel closed {:?}", e);
+                    }
+                }
             }
         }
     });
@@ -239,7 +224,8 @@ where
                             frame[point] = cpal::Sample::from::<I>(&s);
                         }
                         Err(e) => {
-                            trace!("output channel closed {:?}", e);
+                            debug!("sample rx channel closed {:?}", e);
+                            break; // FIXME verify both loops are broken on err
                         }
                     };
                 }
