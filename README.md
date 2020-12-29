@@ -1,4 +1,4 @@
-**work in progress**
+## **work in progress!**
 
 a music player + library born out of a desire to enable deeper music classification through user defined properties, to execute complex queries using those properties, and to support 'decentralized libraries'.
 

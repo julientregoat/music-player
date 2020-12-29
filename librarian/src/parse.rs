@@ -23,9 +23,9 @@ pub struct ParseResultBuilder {
     date: Option<String>,
     track: Option<String>,
     track_pos: Option<i32>,
-    channels: Option<i16>,
-    bit_rate: Option<i32>,
-    sample_rate: Option<i32>,
+    channels: Option<u16>,
+    bit_depth: Option<u16>,
+    sample_rate: Option<u32>,
 }
 
 // would be ideal to tie the builder to the path a bit more strongly, such that
@@ -40,7 +40,7 @@ impl ParseResultBuilder {
             track: None,
             track_pos: None,
             channels: None,
-            bit_rate: None,
+            bit_depth: None,
             sample_rate: None,
         }
     }
@@ -69,20 +69,20 @@ impl ParseResultBuilder {
         self.track_pos = Some(t)
     }
 
-    pub fn channels(&mut self, c: i16) {
+    pub fn channels(&mut self, c: u16) {
         self.channels = Some(c)
     }
 
-    pub fn bit_rate(&mut self, b: i32) {
-        self.bit_rate = Some(b)
+    pub fn bit_depth(&mut self, b: u16) {
+        self.bit_depth = Some(b)
     }
 
-    pub fn sample_rate(&mut self, s: i32) {
+    pub fn sample_rate(&mut self, s: u32) {
         self.sample_rate = Some(s)
     }
 
     pub fn has_bare_minimum(&self) -> bool {
-        match (self.channels, self.bit_rate, self.sample_rate) {
+        match (self.channels, self.bit_depth, self.sample_rate) {
             (Some(_), Some(_), Some(_)) => true,
             _ => false,
         }
@@ -94,7 +94,7 @@ impl ParseResultBuilder {
             &self.album,
             &self.track,
             self.channels,
-            self.bit_rate,
+            self.bit_depth,
             self.sample_rate,
         ) {
             (true, Some(_), Some(_), Some(_), Some(_), Some(_)) => true,
@@ -110,7 +110,7 @@ impl ParseResultBuilder {
             &self.track,
             self.track_pos,
             self.channels,
-            self.bit_rate,
+            self.bit_depth,
             self.sample_rate,
         ) {
             (
@@ -161,7 +161,7 @@ impl ParseResultBuilder {
             self.album,
             self.track,
             self.channels,
-            self.bit_rate,
+            self.bit_depth,
             self.sample_rate,
         ) {
             (
@@ -169,7 +169,7 @@ impl ParseResultBuilder {
                 Some(album),
                 Some(track),
                 Some(channels),
-                Some(bit_rate),
+                Some(bit_depth),
                 Some(sample_rate),
             ) => Some(ParseResult {
                 path: self.path,
@@ -179,7 +179,7 @@ impl ParseResultBuilder {
                 track,
                 track_pos: self.track_pos,
                 channels,
-                bit_rate,
+                bit_depth,
                 sample_rate,
             }),
             _ => {
@@ -200,9 +200,9 @@ pub struct ParseResult {
     pub date: Option<String>,
     pub track: String,
     pub track_pos: Option<i32>,
-    pub channels: i16,
-    pub bit_rate: i32,
-    pub sample_rate: i32,
+    pub channels: u16,
+    pub bit_depth: u16,
+    pub sample_rate: u32,
 }
 
 // TODO split out import file types - MP3 etc. can have a trait or enum impl?
@@ -233,9 +233,9 @@ pub fn parse_flac(p: PathBuf) -> Option<ParseResult> {
     );
 
     let file_info = reader.streaminfo();
-    builder.channels(file_info.channels as i16);
-    builder.bit_rate(file_info.bits_per_sample as i32);
-    builder.sample_rate(file_info.sample_rate as i32);
+    builder.channels(file_info.channels as u16);
+    builder.bit_depth(file_info.bits_per_sample as u16);
+    builder.sample_rate(file_info.sample_rate);
 
     for artist in reader.get_tag("artist") {
         builder.artist(artist.to_owned());
@@ -285,9 +285,9 @@ pub fn parse_wav(path: PathBuf) -> Option<ParseResult> {
         track: UNKNOWN_ENTRY.to_string(),
         date: None,
         track_pos: None,
-        channels: encoding.channels as i16,
-        bit_rate: encoding.bits_per_sample as i32,
-        sample_rate: encoding.sample_rate as i32,
+        channels: encoding.channels,
+        bit_depth: encoding.bits_per_sample,
+        sample_rate: encoding.sample_rate,
     })
 }
 
@@ -313,11 +313,10 @@ pub fn parse_mp3(path: PathBuf) -> Option<ParseResult> {
         }
     };
 
-    builder.channels(f.channels as i16);
-    builder.sample_rate(f.sample_rate as i32);
-    // TODO handle VBR; need to parse full file?
-    // is there an easy way to detect?
-    builder.bit_rate(f.bitrate as i32);
+    builder.channels(f.channels as u16);
+    builder.sample_rate(f.sample_rate as u32);
+    // TODO what to input? mp3 bit depth is lost in the process
+    builder.bit_depth(0);
 
     let path_str = match builder.path().to_str() {
         Some(p) => p,

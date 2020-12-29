@@ -1,3 +1,0 @@
-- error handling
-  - crates: thiserror, anyhow?
-- ensure simd for track parsing?

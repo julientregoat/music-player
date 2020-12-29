@@ -1,0 +1,12 @@
+[config]
+default_to_workspace = false
+
+[tasks.run]
+script = "RUST_LOG=ui_gtk,librarian cargo run -p ui-gtk"
+
+# requires cargo-watch plugin
+[tasks.watch]
+script = "RUST_LOG=ui_gtk,librarian cargo watch -x \"run -p ui-gtk\" -w .."
+
+[tasks.buildwin]
+script = "RUST_LOG=ui_gtk,librarian PKG_CONFIG=mingw64-pkg-config cargo build -p ui-gtk --target x86_64-pc-windows-gnu"

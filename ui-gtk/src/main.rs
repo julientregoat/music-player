@@ -1,4 +1,3 @@
-extern crate dotenv;
 extern crate gio;
 extern crate glib;
 extern crate gtk;
@@ -10,7 +9,7 @@ extern crate tokio_compat_02;
 
 use gio::prelude::*;
 use gtk::prelude::*;
-use log::{debug, error, info};
+use log::{error, info};
 use std::env;
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc as tokio_mpsc;
@@ -20,17 +19,21 @@ mod events;
 mod header;
 mod track_list;
 
-fn build_ui(application: &gtk::Application, lib_chan: events::LibEventSender) -> gtk::ListStore {
+fn build_ui(
+    application: &gtk::Application,
+    lib_chan: events::LibEventSender,
+) -> gtk::ListStore {
     let window = gtk::ApplicationWindow::new(application);
 
     window.set_title("music player");
     // window.set_border_width(1);
-    window.set_position(gtk::WindowPosition::Mouse);
+    window.set_position(gtk::WindowPosition::CenterOnParent);
     window.set_default_size(600, 400);
 
     let header = header::build_header(lib_chan.clone());
 
-    let (track_list_window, track_list_view, track_list_store) = track_list::build_track_list();
+    let (track_list_window, track_list_view, track_list_store) =
+        track_list::build_track_list();
 
     track_list_view.connect_row_activated(move |v, _path, _col| {
         let sel = v.get_selection().get_selected().unwrap();
@@ -52,7 +55,10 @@ fn build_ui(application: &gtk::Application, lib_chan: events::LibEventSender) ->
 
 const IMPORT_ACTION: &'static str = "import";
 
-fn build_menu_bar(app: &gtk::Application, lib_chan: events::LibEventSender) -> gio::Menu {
+fn build_menu_bar(
+    app: &gtk::Application,
+    lib_chan: events::LibEventSender,
+) -> gio::Menu {
     // should the creation and registration of actions be separate?
     // not a fan of the nested closures. seems necessary for menu bar tho?
     let import_action = gio::SimpleAction::new(IMPORT_ACTION, None);
@@ -85,7 +91,10 @@ fn build_menu_bar(app: &gtk::Application, lib_chan: events::LibEventSender) -> g
 
     let menubar = gio::Menu::new();
     let file_menu = gio::Menu::new();
-    let import_mitem = gio::MenuItem::new(Some("Import"), Some(&format!("app.{}", IMPORT_ACTION)));
+    let import_mitem = gio::MenuItem::new(
+        Some("Import"),
+        Some(&format!("app.{}", IMPORT_ACTION)),
+    );
 
     file_menu.append_item(&import_mitem);
     menubar.append_submenu(Some("File"), &file_menu);
@@ -105,39 +114,46 @@ use glib::MainContext;
 use log::LevelFilter;
 use log4rs::append::console::ConsoleAppender;
 use log4rs::append::file::FileAppender;
-use log4rs::config::{Appender, Config, Logger, Root};
+use log4rs::config::{Appender, Config, Root};
 use log4rs::encode::pattern::PatternEncoder;
 
 // TODO library dir should be stored in db and checked for there first before
 #[tokio::main]
 pub async fn main() {
-    // env_logger::init();
-    // dotenv().ok();
-
     // on error here, prompt user for desired db path
     let bin_path = std::env::current_exe().unwrap();
     let db_dir = bin_path.parent().unwrap().to_path_buf();
-    //
-    let mut log_path = db_dir.clone();
-    log_path.push("uigtklog.txt");
-    let stdout = ConsoleAppender::builder().build();
+
+    let log_pattern = Box::new(PatternEncoder::new(
+        "{d(%Y-%m-%d %H:%M:%S)} {l} {t} - {m}{n}",
+        // "h({d(%Y-%m-%d %H:%M:%S)} {l} {t}) - {m}{n}", // TODO add highlight
+    ));
+
+    let stdout = ConsoleAppender::builder()
+        .encoder(log_pattern.clone())
+        .build();
+
+    // overwrite the log for now while primarily dev
+    // TODO use RollingFileAppender to store max 25mb logs / 10 logs
+    let log_path = db_dir.join("musicplayer-log.txt");
     let logfile = FileAppender::builder()
-        .encoder(Box::new(PatternEncoder::new("{d} - {m}{n}")))
+        .encoder(log_pattern)
+        .append(false)
         .build(log_path)
         .unwrap();
 
-    let config = Config::builder()
+    let log_config = Config::builder()
         .appender(Appender::builder().build("stdout", Box::new(stdout)))
         .appender(Appender::builder().build("logfile", Box::new(logfile)))
         .build(
             Root::builder()
                 .appender("stdout")
                 .appender("logfile")
-                .build(LevelFilter::Trace),
+                .build(LevelFilter::Debug),
         )
         .unwrap();
 
-    let handle = log4rs::init_config(config).unwrap();
+    let _log_handle = log4rs::init_config(log_config).unwrap();
 
     let app_state = Arc::new(Mutex::new(AppState { tracklist: None }));
 
@@ -152,7 +168,9 @@ pub async fn main() {
     rx_app.attach(Some(&main_ctx), events::app_event_loop(app_state.clone()));
 
     let lib = librarian::Library::open_or_create(db_dir).compat().await;
-    tokio::spawn(async move { events::librarian_event_loop(lib, rx_lib, tx_app.clone()).await });
+    tokio::spawn(async move {
+        events::librarian_event_loop(lib, rx_lib, tx_app.clone()).await
+    });
 
     let application = gtk::ApplicationBuilder::new()
         .application_id("nyc.jules.music-player")
