@@ -5,6 +5,7 @@ use cpal::{
 };
 use log::{debug, error, trace};
 use std::path::PathBuf;
+use std::sync::mpsc::{Receiver, SyncSender};
 
 trait SampleConvertIter<S: cpal::Sample>: Iterator {
     fn to_sample(val: Self::Item) -> S;
@@ -47,10 +48,9 @@ macro_rules! sample_channel_generator {
                     let s: $SamplePrimitive = $transform(s);
                     match tx.send(s) {
                         Ok(_) => (),
-                        Err(e) => {
-                            println!("sample tx chan closed {:?}", e);
+                        Err(_) => {
+                            trace!("sample tx channel closed");
                             break;
-                            // debug!("sample tx channel closed {:?}", e);
                         }
                     }
                 }
@@ -117,9 +117,8 @@ fn mp3_sample_chan_i16(
                 match tx.send(s) {
                     Ok(_) => (),
                     Err(e) => {
-                        println!("sample tx chan closed {:?}", e);
+                        trace!("sample tx chan closed {:?}", e);
                         break;
-                        // debug!("sample tx channel closed {:?}", e);
                     }
                 }
             }
@@ -208,37 +207,43 @@ fn get_output_stream<O, I>(
     sample_chan: std::sync::mpsc::Receiver<I>,
     config: &cpal::StreamConfig,
     channels: usize,
-) -> Result<cpal::Stream, cpal::BuildStreamError>
+    // ) -> Result<cpal::Stream, cpal::BuildStreamError>
+) -> Result<cpal::Stream, ()>
 where
     I: cpal::Sample + Send + 'static,
     O: cpal::Sample,
 {
     let stream_chans = config.channels;
-    device.build_output_stream(
-        config,
-        move |data: &mut [O], _conf: &cpal::OutputCallbackInfo| {
-            for frame in data.chunks_mut(stream_chans as usize) {
-                for point in 0..channels {
-                    match sample_chan.recv() {
-                        Ok(s) => {
-                            frame[point] = cpal::Sample::from::<I>(&s);
+    Ok(
+        device
+            .build_output_stream(
+                config,
+                move |data: &mut [O], _conf: &cpal::OutputCallbackInfo| {
+                    'buffer_iter: for frame in
+                        data.chunks_mut(stream_chans as usize)
+                    {
+                        for point in 0..channels {
+                            match sample_chan.recv() {
+                                Ok(s) => {
+                                    frame[point] = cpal::Sample::from::<I>(&s);
+                                }
+                                Err(e) => {
+                                    error!("sample rx channel closed {:?}", e);
+                                    break 'buffer_iter;
+                                }
+                            };
                         }
-                        Err(e) => {
-                            debug!("sample rx channel closed {:?}", e);
-                            break; // FIXME verify both loops are broken on err
-                        }
-                    };
-                }
-            }
-        },
-        move |err| {
-            // TODO proper handling
-            error!("err output stream {:?}", err);
-        },
+                    }
+                },
+                move |err| {
+                    // TODO proper handling
+                    error!("err output stream {:?}", err);
+                },
+            )
+            // TODO if this is an AlsaStream, it needs to be converted?,
+            .unwrap(), // .into()
     )
 }
-
-use std::sync::mpsc::{Receiver, SyncSender};
 
 // FIXME account for U16/U32 i/o -- needs to be accomodated in AudioMetadata
 fn get_config_score(
@@ -428,8 +433,6 @@ impl AudioStream {
             let (s, _pt) = create_stream(source);
             s.play().unwrap();
 
-            debug!("playing");
-
             while let Ok(res) = rx.recv() {
                 match res {
                     StreamCommand::Pause => {
@@ -444,8 +447,6 @@ impl AudioStream {
                     }
                 }
             }
-            // letting the thread handle drop appears to close the stream asap
-            // pt.join().unwrap();
         });
 
         AudioStream {
