@@ -252,6 +252,7 @@ impl Track {
             .await
     }
 
+    // TODO should this be outside the Track impl?
     pub async fn get_all_detailed(
         conn: &mut SqlitePoolConn,
     ) -> Result<Vec<DetailedTrack>, sqlx::Error> {

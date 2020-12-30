@@ -68,15 +68,8 @@ pub async fn librarian_event_loop(
     while let Some(msg) = listener.recv().await {
         match msg {
             LibraryMsg::RefreshTracklist => {
-                let mut conn = lib.db_pool.acquire().compat().await.unwrap();
-                let result =
-                    librarian::models::Track::get_all_detailed(&mut conn)
-                        .compat()
-                        .await
-                        .unwrap();
-                {
-                    app_chan.send(AppMsg::Tracklist(result)).unwrap();
-                }
+                let result = lib.get_tracklist().compat().await;
+                app_chan.send(AppMsg::Tracklist(result)).unwrap();
             }
             LibraryMsg::ImportDir(path) => {
                 // ideally, this should return tracks in a stream so the UI

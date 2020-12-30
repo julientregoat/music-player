@@ -62,8 +62,14 @@ pub fn parse_dir(
     Ok(())
 }
 
-// TODO store library metadata somewhere. db? user editable config file may be >
-// - current library base path; where files are copied to on import
+// configurations to implement
+// - file + dir naming (e.g. Artist or Album top level, track name format)
+// - option to copy files to a library dir, or to leave in place
+
+struct UserConfig {
+    lib_path: PathBuf,
+}
+
 pub struct Library {
     pub db_pool: SqlitePool,
     // abstract sthread + tx to struct that requires both
@@ -145,6 +151,7 @@ impl Library {
         let mut idx = 0;
         let mut imported_tracks = Vec::new();
         // FIXME if cannot be canoniclized, it doesn't exist
+        // create if canonicalizing fails? since this should be from db, prob
         let import_target = import_to.canonicalize().unwrap();
         while let Some(msg) = rx.recv().await {
             debug!("copying idx {} {:?}", idx, msg);
@@ -178,9 +185,6 @@ impl Library {
             if track_path.exists() {
                 // FIXME if msg.path (source location) == track_path
                 // then proceed without error - audio file is in right place
-
-                // this should be impossible since SQL should catch it
-                // optionally skip dupes? log to user
                 error!("target track path exists, skipping import")
             } else {
                 trace!("bout to copy file {:?}", &track_path);
@@ -239,6 +243,12 @@ impl Library {
         debug!("final copies futures joined");
 
         imported_tracks
+    }
+
+    pub async fn get_tracklist(&self) -> Vec<models::DetailedTrack> {
+        let mut conn = self.db_pool.acquire().await.unwrap();
+        // TODO handle failure
+        models::Track::get_all_detailed(&mut conn).await.unwrap()
     }
 
     pub async fn play_track(&mut self, track_id: i64) {
