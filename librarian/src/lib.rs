@@ -1,17 +1,17 @@
+extern crate aiff;
 extern crate chrono;
 extern crate claxon;
+extern crate cpal;
+extern crate directories_next;
 extern crate futures;
 extern crate hound;
 extern crate log;
-// TODO PR move serde to test dependencies for this crate
-// TODO find a way to share or reuse reader from rtag
-extern crate aiff;
-extern crate cpal;
 extern crate minimp3;
+// TODO find a way to share or reuse reader from rtag
 extern crate rtag; // TODO use id3
 extern crate sqlx;
-// extern crate directories;
 
+use directories_next::{BaseDirs, UserDirs};
 use futures::future::{self, FutureExt};
 use log::{debug, error, info, trace};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
@@ -27,15 +27,6 @@ pub mod parse;
 pub mod playback;
 
 use playback::AudioStream;
-
-// config options
-// importing
-// - if track with same name + release (and thus artist) exists
-//      - don't import, log error or maybe allow user to review later, e.g. compare
-//      sizes (maybe file is misnamed, wrong album, etc)
-//      - add number to name (e.g. "<track> 1")
-// - clean up duplicate tags if present
-// - library file name formatting - if copy to lib dir, how to structure?
 
 pub fn parse_dir(
     tx: &tokio_mpsc::UnboundedSender<parse::ParseResult>,
@@ -62,27 +53,94 @@ pub fn parse_dir(
     Ok(())
 }
 
+const DEFAULT_DIR_NAME: &'static str = "recordplayer";
+
 // configurations to implement
 // - file + dir naming (e.g. Artist or Album top level, track name format)
-// - option to copy files to a library dir, or to leave in place
+// - how to handle duplicate track entries in the db
+//   - replace track file path with new one
+//   - don't import new one
+//   - let user decide every time
 
 struct UserConfig {
-    lib_path: PathBuf,
+    config_dir: PathBuf,
+    lib_dir: PathBuf,
+    copy_on_import: bool,
+}
+
+impl UserConfig {
+    pub fn new(
+        config_dir: PathBuf,
+        lib_dir: PathBuf,
+        copy_on_import: bool,
+    ) -> Self {
+        UserConfig {
+            config_dir,
+            lib_dir,
+            copy_on_import,
+        }
+    }
+
+    pub fn config_dir(&self) -> &Path {
+        self.config_dir.as_path()
+    }
+
+    pub fn lib_dir(&self) -> &Path {
+        self.lib_dir.as_path()
+    }
+}
+
+impl Default for UserConfig {
+    fn default() -> Self {
+        let sysdirs = BaseDirs::new().unwrap();
+        let userdirs = UserDirs::new().unwrap();
+        UserConfig {
+            lib_dir: userdirs.audio_dir().unwrap().join(DEFAULT_DIR_NAME),
+            config_dir: sysdirs.config_dir().join(DEFAULT_DIR_NAME),
+            copy_on_import: true,
+        }
+    }
 }
 
 pub struct Library {
-    pub db_pool: SqlitePool,
-    // abstract sthread + tx to struct that requires both
+    db_pool: SqlitePool,
     stream: Option<AudioStream>,
+    config: UserConfig,
 }
+
 impl Library {
-    pub async fn open_or_create(db_dir: PathBuf) -> Self {
-        let mut db_path = db_dir;
-        db_path.push("librarian.db");
+    pub async fn open_or_create() -> Self {
+        // FIXME ensure migrations are always present - compile w app?
+        let dev_dir_override = std::env::var("RPLIB_DEV_ROOT");
+        let copy_on_import = std::env::var("RPLIB_COPY_ON_IMPORT")
+            .unwrap_or(String::from(""))
+            == "true";
+
+        let (default_config_dir, default_audio_dir) = match dev_dir_override {
+            Ok(dir) => {
+                let p = PathBuf::from(dir);
+                (p.clone(), p)
+            }
+            _ => (
+                BaseDirs::new().unwrap().config_dir().join(DEFAULT_DIR_NAME),
+                UserDirs::new()
+                    .unwrap()
+                    .audio_dir()
+                    .unwrap()
+                    .join(DEFAULT_DIR_NAME),
+            ),
+        };
+
+        if !default_config_dir.exists() {
+            fs::create_dir_all(&default_config_dir)
+                .expect("unable to create config dir");
+        }
+
+        let db_path = default_config_dir.join("librarian.db");
 
         if !db_path.exists() {
             debug!("db does not exist; creating at {:?}", db_path);
-            std::fs::File::create(&db_path).expect("failed to create db");
+            fs::File::create(&db_path).expect("failed to create db");
         }
 
         let conn_opts = SqliteConnectOptions::new()
@@ -100,37 +158,27 @@ impl Library {
 
         info!("connected to db");
 
-        // FIXME get migration dir properly
-        let mpath = if cfg!(any(target_os = "linux", target_os = "macos")) {
-            let home = std::env::var("HOME").unwrap();
-            format!("{}{}", home, "/Code/music-player/librarian/migrations")
-        } else if cfg!(target_os = "windows") {
-            String::from("/Users/jt-in/Code/music-player/librarian/migrations")
-        } else {
-            unimplemented!("whoops")
-        };
+        let migrations_dir = default_config_dir.join("/migrations");
+        if !migrations_dir.exists() {
+            panic!("migrations directory doesn't exist {:?}", migrations_dir);
+        }
 
-        let m = sqlx::migrate::Migrator::new(PathBuf::from(mpath))
-            .await
-            .unwrap();
-        m.run(&db_pool).await.unwrap();
+        let migrator =
+            sqlx::migrate::Migrator::new(PathBuf::from(migrations_dir))
+                .await
+                .unwrap();
+        migrator.run(&db_pool).await.unwrap();
 
-        // TODO determine where libdir should be - same as db?
-        // let lib_path: PathBuf = library.into();
-        // if !lib_path.exists() {
-        //     debug!("library doesn't exist, creating at {:?}", lib_path);
-        //     if let Err(e) = fs::create_dir(lib_path) {
-        //         panic!("failed to create library dir {:?}", e);
-        //     }
-        // } else if !lib_path.is_dir() {
-        //     panic!("file exists at library location but it is not a dir")
-        // } else if lib_path.is_relative() {
-        //     panic!("library path can't be a relative path")
-        // }
+        // TODO check database for user config?
 
         Library {
             db_pool,
             stream: None,
+            config: UserConfig::new(
+                default_config_dir,
+                default_audio_dir,
+                copy_on_import,
+            ),
         }
     }
 
@@ -192,7 +240,6 @@ impl Library {
                 // TODO conditionally copy to path
                 // TODO check fs handle limit with `ulimit -n`
                 // try to raise? need to figure out how many I can safely acquire
-                // TODO handle panics below - need to return future, maybe boxed?
                 // TODO should the copy happen before the import? why not concurrent?
                 // FIXME copy should be removed if db insert fails
                 copies.push(
