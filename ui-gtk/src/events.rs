@@ -74,18 +74,7 @@ pub async fn librarian_event_loop(
             LibraryMsg::ImportDir(path) => {
                 // ideally, this should return tracks in a stream so the UI
                 // is updated with information faster
-                let imported_tracks = lib
-                    .import_dir(
-                        // FIXME get lib path properly; librarian to handle
-                        PathBuf::from(
-                            std::env::var("LIB_DIR")
-                                .unwrap_or(String::from("../../recordplayer")),
-                        )
-                        .as_path(),
-                        path,
-                    )
-                    .compat()
-                    .await;
+                let imported_tracks = lib.import_dir(path).compat().await;
                 {
                     app_chan
                         .send(AppMsg::ImportedTracks(imported_tracks))

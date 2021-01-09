@@ -7,7 +7,7 @@ target/
 
 .env
 
-testaudiolib
+rpconfig.toml
 
 
 # sqlite stuff
