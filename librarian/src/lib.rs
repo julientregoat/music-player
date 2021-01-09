@@ -1,22 +1,27 @@
+extern crate aiff;
 extern crate chrono;
 extern crate claxon;
+extern crate cpal;
+extern crate directories_next;
 extern crate futures;
 extern crate hound;
 extern crate log;
-// TODO PR move serde to test dependencies for this crate
-// TODO find a way to share or reuse reader from rtag
-extern crate aiff;
-extern crate cpal;
 extern crate minimp3;
+// TODO find a way to share or reuse reader from rtag
 extern crate rtag; // TODO use id3
+extern crate serde;
+extern crate serde_derive;
 extern crate sqlx;
-// extern crate directories;
+extern crate toml;
 
+use directories_next::{BaseDirs, UserDirs};
 use futures::future::{self, FutureExt};
 use log::{debug, error, info, trace};
+use serde_derive::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use std::{
     fs,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 use tokio::fs as async_fs;
@@ -27,15 +32,6 @@ pub mod parse;
 pub mod playback;
 
 use playback::AudioStream;
-
-// config options
-// importing
-// - if track with same name + release (and thus artist) exists
-//      - don't import, log error or maybe allow user to review later, e.g. compare
-//      sizes (maybe file is misnamed, wrong album, etc)
-//      - add number to name (e.g. "<track> 1")
-// - clean up duplicate tags if present
-// - library file name formatting - if copy to lib dir, how to structure?
 
 pub fn parse_dir(
     tx: &tokio_mpsc::UnboundedSender<parse::ParseResult>,
@@ -62,21 +58,119 @@ pub fn parse_dir(
     Ok(())
 }
 
-// TODO store library metadata somewhere. db? user editable config file may be >
-// - current library base path; where files are copied to on import
-pub struct Library {
-    pub db_pool: SqlitePool,
-    // abstract sthread + tx to struct that requires both
-    stream: Option<AudioStream>,
+const DEFAULT_DIR_NAME: &'static str = "recordplayer";
+
+// configurations to implement
+// - file + dir naming (e.g. Artist or Album top level, track name format)
+// - how to handle duplicate track entries in the db
+//   - replace track file path with new one
+//   - don't import new one
+//   - let user decide every time
+
+#[derive(Deserialize)]
+struct UserConfigBuilder {
+    pub library_dir: Option<PathBuf>,
+    pub copy_on_import: Option<bool>,
 }
+
+#[derive(Serialize)]
+struct UserConfig {
+    path: PathBuf,
+    library_dir: PathBuf,
+    copy_on_import: bool,
+}
+
+impl UserConfig {
+    /// opens or creates file at path and populates missing properties with
+    /// defaults. saves fully populated file before returning
+    pub fn from_file(path: PathBuf) -> Self {
+        let mut user_config_str = String::new();
+        let mut handle = match path.exists() {
+            true => fs::File::open(&path).unwrap(),
+            false => fs::File::create(&path).unwrap(),
+        };
+
+        handle.read_to_string(&mut user_config_str).unwrap();
+
+        let UserConfigBuilder {
+            library_dir,
+            copy_on_import,
+        } = toml::from_str(&user_config_str).unwrap();
+
+        // config defaults
+        let conf = UserConfig {
+            path,
+            library_dir: library_dir.unwrap_or(
+                UserDirs::new()
+                    .unwrap()
+                    .audio_dir()
+                    .unwrap()
+                    .join(DEFAULT_DIR_NAME),
+            ),
+            copy_on_import: copy_on_import.unwrap_or(true),
+        };
+
+        conf.save().unwrap();
+
+        conf
+    }
+
+    pub fn save(&self) -> std::io::Result<()> {
+        let toml_str = toml::to_string_pretty(self).unwrap();
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&self.path)?;
+
+        file.write_all(toml_str.as_bytes())
+    }
+
+    pub fn library_dir(&self) -> &Path {
+        self.library_dir.as_path()
+    }
+
+    pub fn copy_on_import(&self) -> bool {
+        self.copy_on_import
+    }
+}
+
+pub struct Library {
+    db_pool: SqlitePool,
+    stream: Option<AudioStream>,
+    config: UserConfig,
+}
+
 impl Library {
-    pub async fn open_or_create(db_dir: PathBuf) -> Self {
-        let mut db_path = db_dir;
-        db_path.push("librarian.db");
+    pub async fn open_or_create() -> Self {
+        let config_dir_override = std::env::var("RP_CONFIG_DIR");
+        let config_dir = match config_dir_override {
+            Ok(cpath) => PathBuf::from(cpath),
+            _ => {
+                if cfg!(debug_assertions) {
+                    panic!("using default sysdirs in debug mode. set RP_CONFIG_DIR to librarian root");
+                }
+
+                BaseDirs::new().unwrap().config_dir().to_path_buf()
+            }
+        };
+        println!("config dir {:?}", config_dir);
+
+        if !config_dir.exists() {
+            async_fs::create_dir_all(&config_dir)
+                .await
+                .expect("unable to create config dir");
+        }
+
+        let user_config_path = config_dir.join("rpconfig.toml");
+        let user_config = UserConfig::from_file(user_config_path);
+
+        let db_path = config_dir.join("librarian.db");
 
         if !db_path.exists() {
             debug!("db does not exist; creating at {:?}", db_path);
-            std::fs::File::create(&db_path).expect("failed to create db");
+            async_fs::File::create(&db_path)
+                .await
+                .expect("failed to create db");
         }
 
         let conn_opts = SqliteConnectOptions::new()
@@ -94,43 +188,28 @@ impl Library {
 
         info!("connected to db");
 
-        // FIXME get migration dir properly
-        let mpath = if cfg!(any(target_os = "linux", target_os = "macos")) {
-            let home = std::env::var("HOME").unwrap();
-            format!("{}{}", home, "/Code/music-player/librarian/migrations")
-        } else if cfg!(target_os = "windows") {
-            String::from("/Users/jt-in/Code/music-player/librarian/migrations")
-        } else {
-            unimplemented!("whoops")
-        };
+        // FIXME ensure migrations are always present - embed within app?
+        let migrations_dir = config_dir.join("migrations/");
+        if !migrations_dir.exists() {
+            panic!("migrations directory doesn't exist {:?}", migrations_dir);
+        }
 
-        let m = sqlx::migrate::Migrator::new(PathBuf::from(mpath))
-            .await
-            .unwrap();
-        m.run(&db_pool).await.unwrap();
-
-        // TODO determine where libdir should be - same as db?
-        // let lib_path: PathBuf = library.into();
-        // if !lib_path.exists() {
-        //     debug!("library doesn't exist, creating at {:?}", lib_path);
-        //     if let Err(e) = fs::create_dir(lib_path) {
-        //         panic!("failed to create library dir {:?}", e);
-        //     }
-        // } else if !lib_path.is_dir() {
-        //     panic!("file exists at library location but it is not a dir")
-        // } else if lib_path.is_relative() {
-        //     panic!("library path can't be a relative path")
-        // }
+        let migrator =
+            sqlx::migrate::Migrator::new(PathBuf::from(migrations_dir))
+                .await
+                .unwrap();
+        migrator.run(&db_pool).await.unwrap();
 
         Library {
             db_pool,
             stream: None,
+            config: user_config,
         }
     }
 
+    // TODO this whole thing needs to be cleaned up
     pub async fn import_dir(
         &self,
-        import_to: &Path,
         import_from: PathBuf,
     ) -> Vec<models::DetailedTrack> {
         // TODO try out sync channel buffered to ulimit -n
@@ -142,12 +221,10 @@ impl Library {
 
         let fs_handle_limit = 20;
         let mut copies = Vec::with_capacity(fs_handle_limit);
-        let mut idx = 0;
+        let mut copies_idx = 0;
+        let mut noncopies = Vec::new();
         let mut imported_tracks = Vec::new();
-        // FIXME if cannot be canoniclized, it doesn't exist
-        let import_target = import_to.canonicalize().unwrap();
         while let Some(msg) = rx.recv().await {
-            debug!("copying idx {} {:?}", idx, msg);
             // TODO handle artist and album unknown
             // is it crazy to store empty strings for unknown artist? seems cleaner.
             // but that means needeing to check for empty strings to decide
@@ -155,70 +232,72 @@ impl Library {
             // the path. it's a little messy.
             // there should also be a difference btw a user naming an artist
             // "Unknown Artist" and how the system internally handles the absence of a name
-            // FIXME conditionally import file based on user config
-            // otherwise skip path creation & copying
-            println!("import to {:?}", import_to);
 
-            let mut release_path = import_target.join(&msg.artists[0]);
-            release_path.push(&msg.album);
+            if self.config.copy_on_import() {
+                let mut release_path =
+                    self.config.library_dir().join(&msg.artists[0]);
+                release_path.push(&msg.album);
 
-            trace!("about to create dir if needed {:?}", &release_path);
-            match (release_path.exists(), release_path.is_dir()) {
-                (false, _) => fs::create_dir_all(&release_path).unwrap(),
-                (true, false) => {
-                    panic!("target track dir exists but is not a dir")
+                trace!("about to create dir if needed {:?}", &release_path);
+                match (release_path.exists(), release_path.is_dir()) {
+                    (false, _) => fs::create_dir_all(&release_path).unwrap(),
+                    (true, false) => {
+                        panic!("target track dir exists but is not a dir")
+                    }
+                    (true, true) => (),
+                };
+
+                // TODO probably use track name + number as track name? expose config
+                let mut track_path = release_path;
+                track_path.push(&msg.path.file_name().unwrap());
+
+                if track_path.exists() {
+                    error!("target track path exists, skipping import")
+                } else {
+                    trace!("bout to copy file {:?}", &track_path);
+
+                    // TODO check fs handle limit with `ulimit -n`
+                    // try to raise? need to figure out how many I can safely acquire
+                    // FIXME remove file if db insert fails - or switch order?
+                    copies.push(
+                        async_fs::copy(msg.path.clone(), track_path.clone())
+                            .then(|res| match res {
+                                Ok(_) => {
+                                    debug!("getting lock");
+                                    self.db_pool.acquire()
+                                }
+                                Err(e) => {
+                                    panic!("failed to copy track {:?}", e)
+                                }
+                            })
+                            .then(|res| match res {
+                                Ok(c) => {
+                                    let mut msg = msg;
+                                    // update path to show import location
+                                    msg.path = track_path;
+                                    debug!("importing to db {:?}", msg);
+                                    models::import_from_parse_result(c, msg)
+                                }
+                                Err(e) => {
+                                    panic!("failed to acquire conn {:?}", e);
+                                }
+                            }),
+                    );
+                    copies_idx += 1;
                 }
-                (true, true) => (),
-            };
-
-            // TODO probably use track name + number as track name? expose config
-            let mut track_path = release_path;
-            track_path.push(&msg.path.file_name().unwrap());
-
-            if track_path.exists() {
-                // FIXME if msg.path (source location) == track_path
-                // then proceed without error - audio file is in right place
-
-                // this should be impossible since SQL should catch it
-                // optionally skip dupes? log to user
-                error!("target track path exists, skipping import")
             } else {
-                trace!("bout to copy file {:?}", &track_path);
-
-                // TODO conditionally copy to path
-                // TODO check fs handle limit with `ulimit -n`
-                // try to raise? need to figure out how many I can safely acquire
-                // TODO handle panics below - need to return future, maybe boxed?
-                // TODO should the copy happen before the import? why not concurrent?
-                // FIXME copy should be removed if db insert fails
-                copies.push(
-                    async_fs::copy(msg.path.clone(), track_path.clone())
-                        .then(|res| match res {
-                            Ok(_) => {
-                                debug!("getting lock");
-                                self.db_pool.acquire()
-                            }
-                            Err(e) => panic!("failed to copy track {:?}", e),
-                        })
-                        .then(|res| match res {
-                            Ok(c) => {
-                                // store the newly copied path in the db
-                                let mut msg = msg;
-                                msg.path = track_path;
-                                debug!("importing to db {:?}", msg);
-                                models::import_from_parse_result(c, msg)
-                            }
-                            Err(e) => {
-                                panic!("failed to acquire conn {:?}", e);
-                            }
-                        }),
-                );
-                idx += 1;
+                trace!("not copying track on import");
+                noncopies.push(self.db_pool.acquire().then(|res| match res {
+                    Ok(c) => models::import_from_parse_result(c, msg),
+                    Err(e) => {
+                        panic!("failed to acquire conn {:?}", e);
+                    }
+                }));
             }
 
-            if idx > (fs_handle_limit - 1) {
+            if copies_idx > (fs_handle_limit - 1) {
                 debug!("hit buf max copies, awaiting");
-                idx = 0;
+                copies_idx = 0;
                 // FIXME this appears pretty inefficient
                 // there needs to be a way to join futures directly from array
                 // check FuturesUnordered?
@@ -234,11 +313,21 @@ impl Library {
         debug!("import thread joined");
 
         // gotta be a way to do this in the loop?
-        let mut final_import = future::join_all(copies.drain(0..)).await;
-        imported_tracks.append(&mut final_import);
+        let mut final_import_copies = future::join_all(copies.drain(0..)).await;
+        imported_tracks.append(&mut final_import_copies);
+
+        let mut final_import_noncopies =
+            future::join_all(noncopies.drain(0..)).await;
+        imported_tracks.append(&mut final_import_noncopies);
         debug!("final copies futures joined");
 
         imported_tracks
+    }
+
+    pub async fn get_tracklist(&self) -> Vec<models::DetailedTrack> {
+        let mut conn = self.db_pool.acquire().await.unwrap();
+        // TODO handle failure
+        models::Track::get_all_detailed(&mut conn).await.unwrap()
     }
 
     pub async fn play_track(&mut self, track_id: i64) {

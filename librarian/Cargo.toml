@@ -9,7 +9,7 @@ name = 'librarian'
 
 [dependencies]
 tokio = {version = "1.0.1", features = ["fs", "sync"]}
-sqlx = {version = "0.4.1", default-features = false, features = ["runtime-tokio-native-tls", "sqlite", "chrono", "macros", "migrate"]}
+sqlx = {version = "0.4.2", default-features = false, features = ["runtime-tokio-native-tls", "sqlite", "chrono", "macros", "migrate"]}
 claxon = "0.4.3"
 futures = "0.3.8"
 chrono = "0.4"
@@ -21,6 +21,9 @@ aiff = {git = "https://github.com/julientregoat/aiff-rs.git"}
 # cpal = {path = "../../cpal"}
 cpal = {git = "https://github.com/julientregoat/cpal.git", branch = "32bit"}
 # num-traits = "0.2.14"
-# directories-next = "2.0.0"
+directories-next = "2.0.0"
+toml = "0.5.8"
+serde = "1.0.118"
+serde_derive = "1.0.118"
 
 [dev-dependencies]

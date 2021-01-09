@@ -167,9 +167,9 @@ pub async fn main() {
 
     rx_app.attach(Some(&main_ctx), events::app_event_loop(app_state.clone()));
 
-    let lib = librarian::Library::open_or_create(db_dir).compat().await;
+    let lib = librarian::Library::open_or_create().compat().await;
     tokio::spawn(async move {
-        events::librarian_event_loop(lib, rx_lib, tx_app.clone()).await
+        events::librarian_event_loop(lib, rx_lib, tx_app).await
     });
 
     let application = gtk::ApplicationBuilder::new()

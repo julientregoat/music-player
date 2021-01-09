@@ -68,31 +68,13 @@ pub async fn librarian_event_loop(
     while let Some(msg) = listener.recv().await {
         match msg {
             LibraryMsg::RefreshTracklist => {
-                let mut conn = lib.db_pool.acquire().compat().await.unwrap();
-                let result =
-                    librarian::models::Track::get_all_detailed(&mut conn)
-                        .compat()
-                        .await
-                        .unwrap();
-                {
-                    app_chan.send(AppMsg::Tracklist(result)).unwrap();
-                }
+                let result = lib.get_tracklist().compat().await;
+                app_chan.send(AppMsg::Tracklist(result)).unwrap();
             }
             LibraryMsg::ImportDir(path) => {
                 // ideally, this should return tracks in a stream so the UI
                 // is updated with information faster
-                let imported_tracks = lib
-                    .import_dir(
-                        // FIXME get lib path properly; librarian to handle
-                        PathBuf::from(
-                            std::env::var("LIB_DIR")
-                                .unwrap_or(String::from("../../recordplayer")),
-                        )
-                        .as_path(),
-                        path,
-                    )
-                    .compat()
-                    .await;
+                let imported_tracks = lib.import_dir(path).compat().await;
                 {
                     app_chan
                         .send(AppMsg::ImportedTracks(imported_tracks))
