@@ -22,6 +22,7 @@ struct PartialUserConfig {
 
 #[derive(Serialize)]
 pub struct UserConfig {
+    #[serde(skip_serializing)]
     path: PathBuf,
     library_dir: PathBuf,
     copy_on_import: bool,
