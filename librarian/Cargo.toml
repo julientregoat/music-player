@@ -19,7 +19,7 @@ log = "0.4.11"
 minimp3 = "0.5.0" # TODO use tokio async feature?
 aiff = {git = "https://github.com/julientregoat/aiff-rs.git"}
 # cpal = {path = "../../cpal"}
-cpal = {git = "https://github.com/julientregoat/cpal.git", branch = "32bit"}
+cpal = {git = "https://github.com/julientregoat/cpal.git", branch = "24bit"}
 # num-traits = "0.2.14"
 directories-next = "2.0.0"
 toml = "0.5.8"

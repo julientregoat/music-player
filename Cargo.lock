@@ -490,7 +490,7 @@ dependencies = [
 [[package]]
 name = "cpal"
 version = "0.13.1"
-source = "git+https://github.com/julientregoat/cpal.git?branch=32bit#cdc33fd3d03630763fec028a9c90772a23648cb8"
+source = "git+https://github.com/julientregoat/cpal.git?branch=24bit#d865d936871ad882aab58afaac39c517676dd52d"
 dependencies = [
  "alsa",
  "core-foundation-sys 0.6.2",
