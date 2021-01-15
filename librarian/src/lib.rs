@@ -14,14 +14,12 @@ extern crate serde_derive;
 extern crate sqlx;
 extern crate toml;
 
-use directories_next::{BaseDirs, UserDirs};
+use directories_next::BaseDirs;
 use futures::future::{self, FutureExt};
 use log::{debug, error, info, trace};
-use serde_derive::{Deserialize, Serialize};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
 use std::{
     fs,
-    io::{Read, Write},
     path::{Path, PathBuf},
 };
 use tokio::fs as async_fs;
@@ -30,8 +28,10 @@ use tokio::sync::mpsc as tokio_mpsc;
 pub mod models;
 pub mod parse;
 pub mod playback;
+mod userconfig;
 
 use playback::AudioStream;
+use userconfig::UserConfig;
 
 pub fn parse_dir(
     tx: &tokio_mpsc::UnboundedSender<parse::ParseResult>,
@@ -51,87 +51,10 @@ pub fn parse_dir(
                 }
             }
             true => parse_dir(&tx, entry_path.as_ref()).unwrap(),
-            _ => debug!("skipping unknown {:?}", entry_path),
         };
     }
 
     Ok(())
-}
-
-const DEFAULT_DIR_NAME: &'static str = "recordplayer";
-
-// configurations to implement
-// - file + dir naming (e.g. Artist or Album top level, track name format)
-// - how to handle duplicate track entries in the db
-//   - replace track file path with new one
-//   - don't import new one
-//   - let user decide every time
-
-#[derive(Deserialize)]
-struct UserConfigBuilder {
-    pub library_dir: Option<PathBuf>,
-    pub copy_on_import: Option<bool>,
-}
-
-#[derive(Serialize)]
-struct UserConfig {
-    path: PathBuf,
-    library_dir: PathBuf,
-    copy_on_import: bool,
-}
-
-impl UserConfig {
-    /// opens or creates file at path and populates missing properties with
-    /// defaults. saves fully populated file before returning
-    pub fn from_file(path: PathBuf) -> Self {
-        let mut user_config_str = String::new();
-        let mut handle = match path.exists() {
-            true => fs::File::open(&path).unwrap(),
-            false => fs::File::create(&path).unwrap(),
-        };
-
-        handle.read_to_string(&mut user_config_str).unwrap();
-
-        let UserConfigBuilder {
-            library_dir,
-            copy_on_import,
-        } = toml::from_str(&user_config_str).unwrap();
-
-        // config defaults
-        let conf = UserConfig {
-            path,
-            library_dir: library_dir.unwrap_or(
-                UserDirs::new()
-                    .unwrap()
-                    .audio_dir()
-                    .unwrap()
-                    .join(DEFAULT_DIR_NAME),
-            ),
-            copy_on_import: copy_on_import.unwrap_or(true),
-        };
-
-        conf.save().unwrap();
-
-        conf
-    }
-
-    pub fn save(&self) -> std::io::Result<()> {
-        let toml_str = toml::to_string_pretty(self).unwrap();
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .open(&self.path)?;
-
-        file.write_all(toml_str.as_bytes())
-    }
-
-    pub fn library_dir(&self) -> &Path {
-        self.library_dir.as_path()
-    }
-
-    pub fn copy_on_import(&self) -> bool {
-        self.copy_on_import
-    }
 }
 
 pub struct Library {
@@ -161,11 +84,7 @@ impl Library {
                 .expect("unable to create config dir");
         }
 
-        let user_config_path = config_dir.join("rpconfig.toml");
-        let user_config = UserConfig::from_file(user_config_path);
-
         let db_path = config_dir.join("librarian.db");
-
         if !db_path.exists() {
             debug!("db does not exist; creating at {:?}", db_path);
             async_fs::File::create(&db_path)
@@ -188,22 +107,12 @@ impl Library {
 
         info!("connected to db");
 
-        // FIXME ensure migrations are always present - embed within app?
-        let migrations_dir = config_dir.join("migrations/");
-        if !migrations_dir.exists() {
-            panic!("migrations directory doesn't exist {:?}", migrations_dir);
-        }
-
-        let migrator =
-            sqlx::migrate::Migrator::new(PathBuf::from(migrations_dir))
-                .await
-                .unwrap();
-        migrator.run(&db_pool).await.unwrap();
+        sqlx::migrate!("./migrations").run(&db_pool).await.unwrap();
 
         Library {
             db_pool,
             stream: None,
-            config: user_config,
+            config: UserConfig::load_from(config_dir.join("rpconfig.toml")),
         }
     }
 
