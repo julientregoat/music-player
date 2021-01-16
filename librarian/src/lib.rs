@@ -12,6 +12,7 @@ extern crate rtag; // TODO use id3
 extern crate serde;
 extern crate serde_derive;
 extern crate sqlx;
+extern crate tokio_stream;
 extern crate toml;
 
 use directories_next::BaseDirs;
@@ -24,6 +25,7 @@ use std::{
 };
 use tokio::fs as async_fs;
 use tokio::sync::mpsc as tokio_mpsc;
+use tokio_stream::{wrappers::UnboundedReceiverStream, StreamExt};
 
 pub mod models;
 pub mod parse;
@@ -116,9 +118,53 @@ impl Library {
         }
     }
 
+    pub async fn import_track(
+        &self,
+        msg: parse::ParseResult,
+    ) -> models::DetailedTrack {
+        let mut msg = msg;
+        if self.config.copy_on_import() {
+            let mut release_path =
+                self.config.library_dir().join(&msg.artists[0]);
+            release_path.push(&msg.album);
+
+            trace!("about to create dir if needed {:?}", &release_path);
+            match (release_path.exists(), release_path.is_dir()) {
+                (false, _) => {
+                    async_fs::create_dir_all(&release_path).await.unwrap()
+                }
+                (true, false) => {
+                    panic!("target track dir exists but is not a dir")
+                }
+                (true, true) => (),
+            };
+
+            let mut track_path = release_path;
+            track_path.push(&msg.path.file_name().unwrap());
+
+            if track_path.exists() {
+                error!("target track path exists, skipping import")
+            }
+            trace!("bout to copy file {:?}", &track_path);
+
+            async_fs::copy(msg.path.clone(), track_path.clone())
+                .await
+                .unwrap();
+
+            // update path to show import location
+            msg.path = track_path;
+        }
+        let msg = msg;
+
+        debug!("getting db lock for track import");
+        let conn = self.db_pool.acquire().await.unwrap();
+        debug!("importing to db {:?}", msg);
+        models::import_from_parse_result(conn, msg).await
+    }
+
     // TODO this whole thing needs to be cleaned up
     pub async fn import_dir(
-        &self,
+        &'static self,
         import_from: PathBuf,
     ) -> Vec<models::DetailedTrack> {
         // TODO try out sync channel buffered to ulimit -n
@@ -128,109 +174,27 @@ impl Library {
             parse_dir(&tx, import_from.as_ref()).unwrap()
         });
 
-        let fs_handle_limit = 20;
-        let mut copies = Vec::with_capacity(fs_handle_limit);
-        let mut copies_idx = 0;
-        let mut noncopies = Vec::new();
-        let mut imported_tracks = Vec::new();
-        while let Some(msg) = rx.recv().await {
-            // TODO handle artist and album unknown
-            // is it crazy to store empty strings for unknown artist? seems cleaner.
-            // but that means needeing to check for empty strings to decide
-            // if a DIFFERENT placeholder (e.g. Unknown Artist) should be used for
-            // the path. it's a little messy.
-            // there should also be a difference btw a user naming an artist
-            // "Unknown Artist" and how the system internally handles the absence of a name
+        // let fs_handle_limit = 20;s
+        // let mut copies = Vec::with_capacity(fs_handle_limit);
+        // let mut copies_idx = 0;
+        // let mut noncopies = Vec::new();
+        let (txt, mut rxt) = tokio_mpsc::unbounded_channel();
 
-            if self.config.copy_on_import() {
-                let mut release_path =
-                    self.config.library_dir().join(&msg.artists[0]);
-                release_path.push(&msg.album);
+        let h = tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                txt.send(self.import_track(msg).await).unwrap();
 
-                trace!("about to create dir if needed {:?}", &release_path);
-                match (release_path.exists(), release_path.is_dir()) {
-                    (false, _) => fs::create_dir_all(&release_path).unwrap(),
-                    (true, false) => {
-                        panic!("target track dir exists but is not a dir")
-                    }
-                    (true, true) => (),
-                };
-
-                // TODO probably use track name + number as track name? expose config
-                let mut track_path = release_path;
-                track_path.push(&msg.path.file_name().unwrap());
-
-                if track_path.exists() {
-                    error!("target track path exists, skipping import")
-                } else {
-                    trace!("bout to copy file {:?}", &track_path);
-
-                    // TODO check fs handle limit with `ulimit -n`
-                    // try to raise? need to figure out how many I can safely acquire
-                    // FIXME remove file if db insert fails - or switch order?
-                    copies.push(
-                        async_fs::copy(msg.path.clone(), track_path.clone())
-                            .then(|res| match res {
-                                Ok(_) => {
-                                    debug!("getting lock");
-                                    self.db_pool.acquire()
-                                }
-                                Err(e) => {
-                                    panic!("failed to copy track {:?}", e)
-                                }
-                            })
-                            .then(|res| match res {
-                                Ok(c) => {
-                                    let mut msg = msg;
-                                    // update path to show import location
-                                    msg.path = track_path;
-                                    debug!("importing to db {:?}", msg);
-                                    models::import_from_parse_result(c, msg)
-                                }
-                                Err(e) => {
-                                    panic!("failed to acquire conn {:?}", e);
-                                }
-                            }),
-                    );
-                    copies_idx += 1;
-                }
-            } else {
-                trace!("not copying track on import");
-                noncopies.push(self.db_pool.acquire().then(|res| match res {
-                    Ok(c) => models::import_from_parse_result(c, msg),
-                    Err(e) => {
-                        panic!("failed to acquire conn {:?}", e);
-                    }
-                }));
+                // tokio::spawn(async {
+                // });
             }
+        });
 
-            if copies_idx > (fs_handle_limit - 1) {
-                debug!("hit buf max copies, awaiting");
-                copies_idx = 0;
-                // FIXME this appears pretty inefficient
-                // there needs to be a way to join futures directly from array
-                // check FuturesUnordered?
-                let mut imported = future::join_all(copies.drain(0..)).await;
-                imported_tracks.append(&mut imported);
-                debug!("finished awaiting copies");
-            }
-        }
+        let rxt_stream = UnboundedReceiverStream::new(rxt);
 
-        debug!("channel closed");
-
+        let c = rxt_stream.collect().await;
+        h.await.unwrap();
         import_thread.join().unwrap();
-        debug!("import thread joined");
-
-        // gotta be a way to do this in the loop?
-        let mut final_import_copies = future::join_all(copies.drain(0..)).await;
-        imported_tracks.append(&mut final_import_copies);
-
-        let mut final_import_noncopies =
-            future::join_all(noncopies.drain(0..)).await;
-        imported_tracks.append(&mut final_import_noncopies);
-        debug!("final copies futures joined");
-
-        imported_tracks
+        c
     }
 
     pub async fn get_tracklist(&self) -> Vec<models::DetailedTrack> {

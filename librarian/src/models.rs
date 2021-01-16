@@ -3,7 +3,6 @@ use super::parse;
 use core::borrow::BorrowMut;
 use sqlx::{pool::PoolConnection, sqlite::Sqlite};
 use std::collections::HashMap;
-use std::rc::Rc;
 
 pub type SqlitePoolConn = PoolConnection<Sqlite>;
 // type Timestamptz = DateTime<Utc>; // TODO figure out string conversion
