@@ -171,6 +171,12 @@ impl ArtistRelease {
     }
 }
 
+#[derive(Debug)]
+pub struct Tag {
+    pub id: i64,
+    pub name: String,
+}
+
 // TODO store track duration
 #[derive(Clone, Debug)]
 pub struct Track {
@@ -182,7 +188,6 @@ pub struct Track {
     pub sample_rate: i64,
     pub bit_depth: i64,
     pub track_num: Option<i64>,
-    pub tags: String,     // TODO parse to array
     pub created: String,  // TODO parse date
     pub modified: String, // TODO parse date
 }
@@ -191,16 +196,17 @@ pub struct Track {
 pub struct DetailedTrack {
     pub id: i64,
     pub name: String,
-    // is RC worth it here? we have to clone release + artist names
-    // for the UI either way.
+    // TODO use (A)RC for Release, Artists, Tags to prevent duplicate data in
+    // memory as well as avoiding heap allocations?
+    // OR explore stack allocated str options (e.g inlinable_string)
     pub release: Release,
     pub artists: Vec<Artist>,
+    pub tags: Vec<Tag>,
     pub file_path: String,
     pub channels: i64,
     pub sample_rate: i64,
     pub bit_depth: i64,
     pub track_num: Option<i64>,
-    pub tags: String,     // TODO parse to array
     pub created: String,  // TODO parse date
     pub modified: String, // TODO parse date
 }
@@ -267,7 +273,6 @@ impl Track {
                 tracks.sample_rate,
                 tracks.bit_depth,
                 tracks.track_num,
-                tracks.tags,
                 tracks.created,
                 tracks.modified,
                 releases.id as release_id,
@@ -275,14 +280,33 @@ impl Track {
                 releases.date as release_date,
                 releases.created as release_created
             FROM tracks
-            JOIN releases
-            ON tracks.release_id = releases.id;",
+            JOIN releases ON tracks.release_id = releases.id;",
         )
         .fetch_all(conn.borrow_mut())
         .await?;
 
-        let mut release_artists = HashMap::new();
-        // put into a map of release_id -> Vec<Artist>
+        let mut track_tags: HashMap<i64, Vec<Tag>> = HashMap::new();
+        sqlx::query!(
+            "SELECT
+                track_tags.track_id,
+                tags.id,
+                tags.name
+            FROM track_tags
+            JOIN tags ON track_tags.tag_id = tags.id
+            "
+        )
+        .fetch_all(conn.borrow_mut())
+        .await?
+        .into_iter()
+        .for_each(|row| {
+            let ra = track_tags.entry(row.track_id).or_insert(Vec::new());
+            ra.push(Tag {
+                id: row.id,
+                name: row.name,
+            })
+        });
+
+        let mut release_artists: HashMap<i64, Vec<Artist>> = HashMap::new();
         sqlx::query!(
             "SELECT
                 artist_releases.release_id,
@@ -294,14 +318,14 @@ impl Track {
         )
         .fetch_all(conn.borrow_mut())
         .await?
-        .iter()
+        .into_iter()
         .for_each(|row| {
             let ra =
                 release_artists.entry(row.release_id).or_insert(Vec::new());
             ra.push(Artist {
                 id: row.id,
-                name: row.name.clone(),
-                created: row.created.clone(),
+                name: row.name,
+                created: row.created,
             })
         });
 
@@ -321,12 +345,13 @@ impl Track {
                     .get(&track.release_id)
                     .unwrap()
                     .to_owned(),
+                // TODO is removing slower than cloning & dropping?
+                tags: track_tags.remove(&track.id).unwrap(),
                 file_path: track.file_path,
                 channels: track.channels,
                 sample_rate: track.sample_rate,
                 bit_depth: track.bit_depth,
                 track_num: track.track_num,
-                tags: track.tags,
                 created: track.created,
                 modified: track.modified,
             };
@@ -410,12 +435,12 @@ pub async fn import_from_parse_result(
         name: t.name,
         release,
         artists,
+        tags: Vec::new(), // FIXME
         file_path: t.file_path,
         channels: t.channels,
         sample_rate: t.sample_rate,
         bit_depth: t.bit_depth,
         track_num: t.track_num,
-        tags: t.tags,
         created: t.created,
         modified: t.modified,
     }
