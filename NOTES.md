@@ -3,6 +3,7 @@
 - ensure simd for track parsing?
 - FIX GTK+ MEMORY LEAK
   - only happens once an audio stream is started, data is fine till then
+  - anything to do with rendering library strings?
   - LINUX: once audio is played, memory starts to steadily climb up. pausing/playing
   doesn't seem to make a difference, if anything playing more may cause more problems
   - NB - MAC: looks like the memory shoots up once the track is paused, and drops back down after being played. 

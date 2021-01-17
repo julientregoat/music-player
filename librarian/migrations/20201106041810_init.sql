@@ -47,7 +47,7 @@ END;
 
 CREATE TABLE tags (
   id INTEGER PRIMARY KEY NOT NULL,
-  name VARCHAR(25) NOT NULL COLLATE NOCASE -- too long, too short?
+  name VARCHAR(25) UNIQUE NOT NULL COLLATE NOCASE -- too long, too short?
 );
 
 CREATE TABLE track_tags (

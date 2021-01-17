@@ -3,7 +3,6 @@ use super::parse;
 use core::borrow::BorrowMut;
 use sqlx::{pool::PoolConnection, sqlite::Sqlite};
 use std::collections::HashMap;
-use std::rc::Rc;
 
 pub type SqlitePoolConn = PoolConnection<Sqlite>;
 // type Timestamptz = DateTime<Utc>; // TODO figure out string conversion
@@ -192,13 +191,16 @@ pub struct Track {
     pub modified: String, // TODO parse date
 }
 
+// TODO how significant of an impact on memory does duplicating Artist, Release,
+// and Tags per track have? performance?
+// - use [A]RC to reference count and share memory
+// - for Vec<DetailedTrack> etc,  wrap + store Artists/Releases/Tags and use
+// refs in this struct
+// - stack allocated str (e.g inlinable_string) for performance
 #[derive(Debug)]
 pub struct DetailedTrack {
     pub id: i64,
     pub name: String,
-    // TODO use (A)RC for Release, Artists, Tags to prevent duplicate data in
-    // memory as well as avoiding heap allocations?
-    // OR explore stack allocated str options (e.g inlinable_string)
     pub release: Release,
     pub artists: Vec<Artist>,
     pub tags: Vec<Tag>,
@@ -262,8 +264,6 @@ impl Track {
     pub async fn get_all_detailed(
         conn: &mut SqlitePoolConn,
     ) -> Result<Vec<DetailedTrack>, sqlx::Error> {
-        // let tracks = Track::get_all(conn).await?;/
-        // FIXME artists need to be selected separately. how in one query?
         let tracks_with_releases = sqlx::query!(
             "SELECT
                 tracks.id,
@@ -382,16 +382,16 @@ pub async fn import_from_parse_result(
         artists.push(new_artist);
     }
 
-    // FIXME - is this really the case? there is a primary key constraint, verify
-    // this is done to prevent duplicate entries
-    // TODO should this just be wrapped up into the create release fn?
-    let releases = Release::get_artist_releases(&mut conn, artists[0].id)
+    let primary_artist = &artists[0];
+
+    // TODO should this be wrapped around all release creation?
+    let releases = Release::get_artist_releases(&mut conn, primary_artist.id)
         .await
         .unwrap();
 
     let album = metadata.album.as_str();
     let release = match releases.iter().find(|r| r.name == album) {
-        Some(r) => r.clone(), // FIXME avoid clone
+        Some(r) => r.clone(),
         None => Release::create(
             &mut conn,
             album,
@@ -435,7 +435,7 @@ pub async fn import_from_parse_result(
         name: t.name,
         release,
         artists,
-        tags: Vec::new(), // FIXME
+        tags: Vec::new(),
         file_path: t.file_path,
         channels: t.channels,
         sample_rate: t.sample_rate,
