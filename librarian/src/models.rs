@@ -5,25 +5,22 @@ use sqlx::{pool::PoolConnection, sqlite::Sqlite};
 use std::collections::HashMap;
 
 pub type SqlitePoolConn = PoolConnection<Sqlite>;
+pub type RowId = i64;
 // type Timestamptz = DateTime<Utc>; // TODO figure out string conversion
+
 const SQLITE_UNIQUE_VIOLATION: &'static str = "2067";
 
-// sqlite doesn't have precise integers
-
-// FIXME
-// - handle encoding/decoding string array (for Track#tags)
-// - handle datetime columns in structs to map to strings n onw
+// TODO refactor exposed API? associated functions doesn't feel ideal
+// sqlx examples show models organized as traits implemented on the Connection
+// type. this is more ergonomic, but unneeded runtime work?
+// TODO don't look up created tracks, just return last_insert_rowid
 
 #[derive(Clone, Debug)]
 pub struct Artist {
-    pub id: i64,
+    pub id: RowId,
     pub name: String,
     pub created: String, // TODO parse date
 }
-
-// TODO organize these fns
-// in the sqlx examples, they impl organized traits on SqliteConnection
-// which makes sense. but traits are more runtime work, right?
 
 impl Artist {
     pub async fn create(
@@ -56,7 +53,7 @@ impl Artist {
 
     pub async fn get_release_artists(
         conn: &mut SqlitePoolConn,
-        release_id: i64,
+        release_id: RowId,
     ) -> Result<Vec<Self>, sqlx::Error> {
         sqlx::query_as!(
             Self,
@@ -75,7 +72,7 @@ impl Artist {
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct Release {
-    pub id: i64,
+    pub id: RowId,
     pub name: String,
     pub date: Option<String>,
     pub created: String, // TODO parse date
@@ -86,7 +83,7 @@ impl Release {
         conn: &mut SqlitePoolConn,
         name: &str,
         date: Option<&str>,
-        artist_ids: Vec<i64>,
+        artist_ids: Vec<RowId>,
     ) -> Result<Self, sqlx::Error> {
         let mut conn = conn;
         let release_id = sqlx::query(
@@ -123,7 +120,7 @@ impl Release {
 
     pub async fn get_artist_releases(
         conn: &mut SqlitePoolConn,
-        artist_id: i64,
+        artist_id: RowId,
     ) -> Result<Vec<Self>, sqlx::Error> {
         sqlx::query_as!(
             Self,
@@ -143,15 +140,15 @@ impl Release {
 // does this need to be pub? only used internally
 #[derive(Clone, Debug)]
 pub struct ArtistRelease {
-    pub artist_id: i64,
-    pub release_id: i64,
+    pub artist_id: RowId,
+    pub release_id: RowId,
 }
 
 impl ArtistRelease {
     async fn create(
         conn: &mut SqlitePoolConn,
-        artist_id: i64,
-        release_id: i64,
+        artist_id: RowId,
+        release_id: RowId,
     ) -> Result<Self, sqlx::Error> {
         let id = sqlx::query(
             "INSERT INTO artist_releases (artist_id, release_id)
@@ -172,21 +169,61 @@ impl ArtistRelease {
 
 #[derive(Debug)]
 pub struct Tag {
-    pub id: i64,
+    pub id: RowId,
     pub name: String,
+}
+
+impl Tag {
+    pub async fn create(
+        conn: &mut SqlitePoolConn,
+        tag_name: &str,
+    ) -> Result<RowId, sqlx::Error> {
+        let id = sqlx::query("INSERT INTO tags (name) VALUES (?)")
+            .bind(tag_name)
+            .execute(conn)
+            .await?
+            .last_insert_rowid();
+
+        Ok(id)
+    }
+
+    // tags will usually be reused instead of created -> optimize for the read
+    pub async fn find_or_create(
+        conn: &mut SqlitePoolConn,
+        tag_name: &str,
+    ) -> Result<RowId, sqlx::Error> {
+        match sqlx::query_as!(
+            Self,
+            "SELECT id, name from tags WHERE name = ?",
+            tag_name
+        )
+        .fetch_one(conn.borrow_mut())
+        .await
+        {
+            Ok(tag) => Ok(tag.id),
+            Err(sqlx::Error::Database(e)) => match e.code() {
+                Some(code) if code == SQLITE_UNIQUE_VIOLATION => {
+                    Self::create(conn, tag_name).await
+                }
+                Some(code) => panic!("tag insert db failure {:?}", code),
+                None => panic!("tag insert db fail no code"),
+            },
+            Err(e) => panic!("tag insert failed {:?}", e),
+        }
+    }
 }
 
 // TODO store track duration
 #[derive(Clone, Debug)]
 pub struct Track {
-    pub id: i64,
+    pub id: RowId,
     pub name: String,
-    pub release_id: i64,
+    pub release_id: RowId,
     pub file_path: String,
-    pub channels: i64,
-    pub sample_rate: i64,
-    pub bit_depth: i64,
-    pub track_num: Option<i64>,
+    pub channels: RowId,
+    pub sample_rate: RowId,
+    pub bit_depth: RowId,
+    pub track_num: Option<RowId>,
     pub created: String,  // TODO parse date
     pub modified: String, // TODO parse date
 }
@@ -199,31 +236,38 @@ pub struct Track {
 // - stack allocated str (e.g inlinable_string) for performance
 #[derive(Debug)]
 pub struct DetailedTrack {
-    pub id: i64,
+    pub id: RowId,
     pub name: String,
     pub release: Release,
     pub artists: Vec<Artist>,
     pub tags: Vec<Tag>,
     pub file_path: String,
-    pub channels: i64,
-    pub sample_rate: i64,
-    pub bit_depth: i64,
-    pub track_num: Option<i64>,
+    pub channels: RowId,
+    pub sample_rate: RowId,
+    pub bit_depth: RowId,
+    pub track_num: Option<RowId>,
     pub created: String,  // TODO parse date
     pub modified: String, // TODO parse date
 }
 
 impl Track {
+    // pub async fn add_tag(
+    //     conn: &mut SqlitePoolConn,
+    //     id: RowId,
+    //     tag_name: &str,
+    // ) -> Result<(), sqlx::Error> {
+    // }
+
     pub async fn create(
         conn: &mut SqlitePoolConn,
         name: &str,
-        release_id: i64,
+        release_id: RowId,
         file_path: &str,
-        channels: i64,
-        sample_rate: i64,
-        bit_depth: i64,
-        track_num: Option<i64>,
-    ) -> Result<i64, sqlx::Error> {
+        channels: RowId,
+        sample_rate: RowId,
+        bit_depth: RowId,
+        track_num: Option<RowId>,
+    ) -> Result<RowId, sqlx::Error> {
         let track_id = sqlx::query(
             "INSERT INTO tracks
             (name, release_id, file_path, channels, sample_rate, bit_depth, track_num)
@@ -245,7 +289,7 @@ impl Track {
 
     pub async fn get(
         conn: &mut SqlitePoolConn,
-        id: i64,
+        id: RowId,
     ) -> Result<Self, sqlx::Error> {
         sqlx::query_as!(Self, "SELECT * FROM tracks WHERE id = ?", id)
             .fetch_one(conn)
@@ -285,15 +329,14 @@ impl Track {
         .fetch_all(conn.borrow_mut())
         .await?;
 
-        let mut track_tags: HashMap<i64, Vec<Tag>> = HashMap::new();
+        let mut track_tags: HashMap<RowId, Vec<Tag>> = HashMap::new();
         sqlx::query!(
             "SELECT
                 track_tags.track_id,
                 tags.id,
                 tags.name
             FROM track_tags
-            JOIN tags ON track_tags.tag_id = tags.id
-            "
+            JOIN tags ON track_tags.tag_id = tags.id"
         )
         .fetch_all(conn.borrow_mut())
         .await?
@@ -306,7 +349,7 @@ impl Track {
             })
         });
 
-        let mut release_artists: HashMap<i64, Vec<Artist>> = HashMap::new();
+        let mut release_artists: HashMap<RowId, Vec<Artist>> = HashMap::new();
         sqlx::query!(
             "SELECT
                 artist_releases.release_id,
@@ -407,10 +450,10 @@ pub async fn import_from_parse_result(
         &metadata.track,
         release.id,
         metadata.path.to_str().unwrap(), // TODO
-        metadata.channels as i64,
-        metadata.sample_rate as i64,
-        metadata.bit_depth as i64,
-        metadata.track_pos.map(|pos| pos as i64),
+        metadata.channels as RowId,
+        metadata.sample_rate as RowId,
+        metadata.bit_depth as RowId,
+        metadata.track_pos.map(|pos| pos as RowId),
     )
     .await
     {
