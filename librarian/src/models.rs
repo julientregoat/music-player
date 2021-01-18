@@ -13,6 +13,7 @@ const SQLITE_UNIQUE_VIOLATION: &'static str = "2067";
 // TODO refactor exposed API? associated functions doesn't feel ideal
 // sqlx examples show models organized as traits implemented on the Connection
 // type. this is more ergonomic, but unneeded runtime work?
+// separate higher level composed fns from base layer?
 // TODO don't look up created tracks, just return last_insert_rowid
 
 #[derive(Clone, Debug)]
@@ -149,21 +150,16 @@ impl ArtistRelease {
         conn: &mut SqlitePoolConn,
         artist_id: RowId,
         release_id: RowId,
-    ) -> Result<Self, sqlx::Error> {
-        let id = sqlx::query(
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
             "INSERT INTO artist_releases (artist_id, release_id)
             VALUES (?, ?);",
         )
         .bind(artist_id)
         .bind(release_id)
         .execute(conn)
-        .await?
-        .last_insert_rowid();
-
-        Ok(ArtistRelease {
-            artist_id,
-            release_id,
-        })
+        .await
+        .map(|_done| ())
     }
 }
 
@@ -213,6 +209,27 @@ impl Tag {
     }
 }
 
+#[derive(Debug)]
+pub struct TrackTag {
+    track_id: RowId,
+    tag_id: RowId,
+}
+
+impl TrackTag {
+    pub async fn create(
+        conn: &mut SqlitePoolConn,
+        track_id: RowId,
+        tag_id: RowId,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("INSERT INTO track_tags (track_id, tag_id) VALUES (?, ?)")
+            .bind(track_id)
+            .bind(tag_id)
+            .execute(conn)
+            .await
+            .map(|_done| ())
+    }
+}
+
 // TODO store track duration
 #[derive(Clone, Debug)]
 pub struct Track {
@@ -251,13 +268,6 @@ pub struct DetailedTrack {
 }
 
 impl Track {
-    // pub async fn add_tag(
-    //     conn: &mut SqlitePoolConn,
-    //     id: RowId,
-    //     tag_name: &str,
-    // ) -> Result<(), sqlx::Error> {
-    // }
-
     pub async fn create(
         conn: &mut SqlitePoolConn,
         name: &str,
