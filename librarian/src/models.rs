@@ -3,28 +3,25 @@ use super::parse;
 use core::borrow::BorrowMut;
 use sqlx::{pool::PoolConnection, sqlite::Sqlite};
 use std::collections::HashMap;
-use std::rc::Rc;
 
 pub type SqlitePoolConn = PoolConnection<Sqlite>;
+pub type RowId = i64;
 // type Timestamptz = DateTime<Utc>; // TODO figure out string conversion
+
 const SQLITE_UNIQUE_VIOLATION: &'static str = "2067";
 
-// sqlite doesn't have precise integers
-
-// FIXME
-// - handle encoding/decoding string array (for Track#tags)
-// - handle datetime columns in structs to map to strings n onw
+// TODO refactor exposed API? associated functions doesn't feel ideal
+// sqlx examples show models organized as traits implemented on the Connection
+// type. this is more ergonomic, but unneeded runtime work?
+// separate higher level composed fns from base layer?
+// TODO don't look up created tracks, just return last_insert_rowid
 
 #[derive(Clone, Debug)]
 pub struct Artist {
-    pub id: i64,
+    pub id: RowId,
     pub name: String,
     pub created: String, // TODO parse date
 }
-
-// TODO organize these fns
-// in the sqlx examples, they impl organized traits on SqliteConnection
-// which makes sense. but traits are more runtime work, right?
 
 impl Artist {
     pub async fn create(
@@ -57,7 +54,7 @@ impl Artist {
 
     pub async fn get_release_artists(
         conn: &mut SqlitePoolConn,
-        release_id: i64,
+        release_id: RowId,
     ) -> Result<Vec<Self>, sqlx::Error> {
         sqlx::query_as!(
             Self,
@@ -76,7 +73,7 @@ impl Artist {
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct Release {
-    pub id: i64,
+    pub id: RowId,
     pub name: String,
     pub date: Option<String>,
     pub created: String, // TODO parse date
@@ -87,7 +84,7 @@ impl Release {
         conn: &mut SqlitePoolConn,
         name: &str,
         date: Option<&str>,
-        artist_ids: Vec<i64>,
+        artist_ids: Vec<RowId>,
     ) -> Result<Self, sqlx::Error> {
         let mut conn = conn;
         let release_id = sqlx::query(
@@ -124,7 +121,7 @@ impl Release {
 
     pub async fn get_artist_releases(
         conn: &mut SqlitePoolConn,
-        artist_id: i64,
+        artist_id: RowId,
     ) -> Result<Vec<Self>, sqlx::Error> {
         sqlx::query_as!(
             Self,
@@ -144,63 +141,128 @@ impl Release {
 // does this need to be pub? only used internally
 #[derive(Clone, Debug)]
 pub struct ArtistRelease {
-    pub artist_id: i64,
-    pub release_id: i64,
+    pub artist_id: RowId,
+    pub release_id: RowId,
 }
 
 impl ArtistRelease {
     async fn create(
         conn: &mut SqlitePoolConn,
-        artist_id: i64,
-        release_id: i64,
-    ) -> Result<Self, sqlx::Error> {
-        let id = sqlx::query(
+        artist_id: RowId,
+        release_id: RowId,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
             "INSERT INTO artist_releases (artist_id, release_id)
             VALUES (?, ?);",
         )
         .bind(artist_id)
         .bind(release_id)
         .execute(conn)
-        .await?
-        .last_insert_rowid();
+        .await
+        .map(|_done| ())
+    }
+}
 
-        Ok(ArtistRelease {
-            artist_id,
-            release_id,
-        })
+#[derive(Debug)]
+pub struct Tag {
+    pub id: RowId,
+    pub name: String,
+}
+
+impl Tag {
+    pub async fn create(
+        conn: &mut SqlitePoolConn,
+        tag_name: &str,
+    ) -> Result<RowId, sqlx::Error> {
+        let id = sqlx::query("INSERT INTO tags (name) VALUES (?)")
+            .bind(tag_name)
+            .execute(conn)
+            .await?
+            .last_insert_rowid();
+
+        Ok(id)
+    }
+
+    // tags will usually be reused instead of created -> optimize for the read
+    pub async fn find_or_create(
+        conn: &mut SqlitePoolConn,
+        tag_name: &str,
+    ) -> Result<RowId, sqlx::Error> {
+        match sqlx::query_as!(
+            Self,
+            "SELECT id, name from tags WHERE name = ?",
+            tag_name
+        )
+        .fetch_one(conn.borrow_mut())
+        .await
+        {
+            Ok(tag) => Ok(tag.id),
+            Err(sqlx::Error::Database(e)) => match e.code() {
+                Some(code) if code == SQLITE_UNIQUE_VIOLATION => {
+                    Self::create(conn, tag_name).await
+                }
+                Some(code) => panic!("tag insert db failure {:?}", code),
+                None => panic!("tag insert db fail no code"),
+            },
+            Err(e) => panic!("tag insert failed {:?}", e),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct TrackTag {
+    track_id: RowId,
+    tag_id: RowId,
+}
+
+impl TrackTag {
+    pub async fn create(
+        conn: &mut SqlitePoolConn,
+        track_id: RowId,
+        tag_id: RowId,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("INSERT INTO track_tags (track_id, tag_id) VALUES (?, ?)")
+            .bind(track_id)
+            .bind(tag_id)
+            .execute(conn)
+            .await
+            .map(|_done| ())
     }
 }
 
 // TODO store track duration
 #[derive(Clone, Debug)]
 pub struct Track {
-    pub id: i64,
+    pub id: RowId,
     pub name: String,
-    pub release_id: i64,
+    pub release_id: RowId,
     pub file_path: String,
-    pub channels: i64,
-    pub sample_rate: i64,
-    pub bit_depth: i64,
-    pub track_num: Option<i64>,
-    pub tags: String,     // TODO parse to array
+    pub channels: RowId,
+    pub sample_rate: RowId,
+    pub bit_depth: RowId,
+    pub track_num: Option<RowId>,
     pub created: String,  // TODO parse date
     pub modified: String, // TODO parse date
 }
 
+// TODO how significant of an impact on memory does duplicating Artist, Release,
+// and Tags per track have? performance?
+// - use [A]RC to reference count and share memory
+// - for Vec<DetailedTrack> etc,  wrap + store Artists/Releases/Tags and use
+// refs in this struct
+// - stack allocated str (e.g inlinable_string) for performance
 #[derive(Debug)]
 pub struct DetailedTrack {
-    pub id: i64,
+    pub id: RowId,
     pub name: String,
-    // is RC worth it here? we have to clone release + artist names
-    // for the UI either way.
     pub release: Release,
     pub artists: Vec<Artist>,
+    pub tags: Vec<Tag>,
     pub file_path: String,
-    pub channels: i64,
-    pub sample_rate: i64,
-    pub bit_depth: i64,
-    pub track_num: Option<i64>,
-    pub tags: String,     // TODO parse to array
+    pub channels: RowId,
+    pub sample_rate: RowId,
+    pub bit_depth: RowId,
+    pub track_num: Option<RowId>,
     pub created: String,  // TODO parse date
     pub modified: String, // TODO parse date
 }
@@ -209,13 +271,13 @@ impl Track {
     pub async fn create(
         conn: &mut SqlitePoolConn,
         name: &str,
-        release_id: i64,
+        release_id: RowId,
         file_path: &str,
-        channels: i64,
-        sample_rate: i64,
-        bit_depth: i64,
-        track_num: Option<i64>,
-    ) -> Result<i64, sqlx::Error> {
+        channels: RowId,
+        sample_rate: RowId,
+        bit_depth: RowId,
+        track_num: Option<RowId>,
+    ) -> Result<RowId, sqlx::Error> {
         let track_id = sqlx::query(
             "INSERT INTO tracks
             (name, release_id, file_path, channels, sample_rate, bit_depth, track_num)
@@ -237,7 +299,7 @@ impl Track {
 
     pub async fn get(
         conn: &mut SqlitePoolConn,
-        id: i64,
+        id: RowId,
     ) -> Result<Self, sqlx::Error> {
         sqlx::query_as!(Self, "SELECT * FROM tracks WHERE id = ?", id)
             .fetch_one(conn)
@@ -256,8 +318,6 @@ impl Track {
     pub async fn get_all_detailed(
         conn: &mut SqlitePoolConn,
     ) -> Result<Vec<DetailedTrack>, sqlx::Error> {
-        // let tracks = Track::get_all(conn).await?;/
-        // FIXME artists need to be selected separately. how in one query?
         let tracks_with_releases = sqlx::query!(
             "SELECT
                 tracks.id,
@@ -267,7 +327,6 @@ impl Track {
                 tracks.sample_rate,
                 tracks.bit_depth,
                 tracks.track_num,
-                tracks.tags,
                 tracks.created,
                 tracks.modified,
                 releases.id as release_id,
@@ -275,14 +334,32 @@ impl Track {
                 releases.date as release_date,
                 releases.created as release_created
             FROM tracks
-            JOIN releases
-            ON tracks.release_id = releases.id;",
+            JOIN releases ON tracks.release_id = releases.id;",
         )
         .fetch_all(conn.borrow_mut())
         .await?;
 
-        let mut release_artists = HashMap::new();
-        // put into a map of release_id -> Vec<Artist>
+        let mut track_tags: HashMap<RowId, Vec<Tag>> = HashMap::new();
+        sqlx::query!(
+            "SELECT
+                track_tags.track_id,
+                tags.id,
+                tags.name
+            FROM track_tags
+            JOIN tags ON track_tags.tag_id = tags.id"
+        )
+        .fetch_all(conn.borrow_mut())
+        .await?
+        .into_iter()
+        .for_each(|row| {
+            let ra = track_tags.entry(row.track_id).or_insert(Vec::new());
+            ra.push(Tag {
+                id: row.id,
+                name: row.name,
+            })
+        });
+
+        let mut release_artists: HashMap<RowId, Vec<Artist>> = HashMap::new();
         sqlx::query!(
             "SELECT
                 artist_releases.release_id,
@@ -294,14 +371,14 @@ impl Track {
         )
         .fetch_all(conn.borrow_mut())
         .await?
-        .iter()
+        .into_iter()
         .for_each(|row| {
             let ra =
                 release_artists.entry(row.release_id).or_insert(Vec::new());
             ra.push(Artist {
                 id: row.id,
-                name: row.name.clone(),
-                created: row.created.clone(),
+                name: row.name,
+                created: row.created,
             })
         });
 
@@ -321,12 +398,13 @@ impl Track {
                     .get(&track.release_id)
                     .unwrap()
                     .to_owned(),
+                // TODO is removing slower than cloning & dropping?
+                tags: track_tags.remove(&track.id).unwrap(),
                 file_path: track.file_path,
                 channels: track.channels,
                 sample_rate: track.sample_rate,
                 bit_depth: track.bit_depth,
                 track_num: track.track_num,
-                tags: track.tags,
                 created: track.created,
                 modified: track.modified,
             };
@@ -357,16 +435,16 @@ pub async fn import_from_parse_result(
         artists.push(new_artist);
     }
 
-    // FIXME - is this really the case? there is a primary key constraint, verify
-    // this is done to prevent duplicate entries
-    // TODO should this just be wrapped up into the create release fn?
-    let releases = Release::get_artist_releases(&mut conn, artists[0].id)
+    let primary_artist = &artists[0];
+
+    // TODO should this be wrapped around all release creation?
+    let releases = Release::get_artist_releases(&mut conn, primary_artist.id)
         .await
         .unwrap();
 
     let album = metadata.album.as_str();
     let release = match releases.iter().find(|r| r.name == album) {
-        Some(r) => r.clone(), // FIXME avoid clone
+        Some(r) => r.clone(),
         None => Release::create(
             &mut conn,
             album,
@@ -382,10 +460,10 @@ pub async fn import_from_parse_result(
         &metadata.track,
         release.id,
         metadata.path.to_str().unwrap(), // TODO
-        metadata.channels as i64,
-        metadata.sample_rate as i64,
-        metadata.bit_depth as i64,
-        metadata.track_pos.map(|pos| pos as i64),
+        metadata.channels as RowId,
+        metadata.sample_rate as RowId,
+        metadata.bit_depth as RowId,
+        metadata.track_pos.map(|pos| pos as RowId),
     )
     .await
     {
@@ -410,12 +488,12 @@ pub async fn import_from_parse_result(
         name: t.name,
         release,
         artists,
+        tags: Vec::new(),
         file_path: t.file_path,
         channels: t.channels,
         sample_rate: t.sample_rate,
         bit_depth: t.bit_depth,
         track_num: t.track_num,
-        tags: t.tags,
         created: t.created,
         modified: t.modified,
     }
