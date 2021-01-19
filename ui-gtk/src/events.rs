@@ -74,7 +74,8 @@ pub async fn librarian_event_loop(
             LibraryMsg::ImportDir(path) => {
                 // ideally, this should return tracks in a stream so the UI
                 // is updated with information faster
-                let imported_tracks = lib.import_dir(path).compat().await;
+                // FIXME temp fix; get collection properly
+                let imported_tracks = lib.import_dir(path, 1).compat().await;
                 {
                     app_chan
                         .send(AppMsg::ImportedTracks(imported_tracks))

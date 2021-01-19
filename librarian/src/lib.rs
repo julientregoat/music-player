@@ -85,7 +85,8 @@ impl Library {
         }
 
         let db_path = config_dir.join("librarian.db");
-        if !db_path.exists() {
+        let is_db_creation = !db_path.exists();
+        if is_db_creation {
             debug!("db does not exist; creating at {:?}", db_path);
             async_fs::File::create(&db_path)
                 .await
@@ -109,6 +110,14 @@ impl Library {
 
         sqlx::migrate!("./migrations").run(&db_pool).await.unwrap();
 
+        if is_db_creation {
+            // set up default collection
+            let mut conn = db_pool.acquire().await.unwrap();
+            models::Collection::create(&mut conn, "Collection")
+                .await
+                .unwrap();
+        }
+
         Library {
             db_pool,
             stream: None,
@@ -120,6 +129,7 @@ impl Library {
     pub async fn import_dir(
         &self,
         import_from: PathBuf,
+        target_collection: models::RowId, // maybe optional & set a default?
     ) -> Vec<models::DetailedTrack> {
         // TODO try out sync channel buffered to ulimit -n
         let (tx, mut rx) = tokio_mpsc::unbounded_channel();
@@ -185,7 +195,11 @@ impl Library {
                                     // update path to show import location
                                     msg.path = track_path;
                                     debug!("importing to db {:?}", msg);
-                                    models::import_from_parse_result(c, msg)
+                                    models::import_from_parse_result(
+                                        c,
+                                        target_collection,
+                                        msg,
+                                    )
                                 }
                                 Err(e) => {
                                     panic!("failed to acquire conn {:?}", e);
@@ -197,7 +211,11 @@ impl Library {
             } else {
                 trace!("not copying track on import");
                 noncopies.push(self.db_pool.acquire().then(|res| match res {
-                    Ok(c) => models::import_from_parse_result(c, msg),
+                    Ok(c) => models::import_from_parse_result(
+                        c,
+                        target_collection,
+                        msg,
+                    ),
                     Err(e) => {
                         panic!("failed to acquire conn {:?}", e);
                     }

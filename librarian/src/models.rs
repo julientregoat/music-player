@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 pub type SqlitePoolConn = PoolConnection<Sqlite>;
 pub type RowId = i64;
-// type Timestamptz = DateTime<Utc>; // TODO figure out string conversion
+// type Timestamptz = DateTime<Utc>; // TODO use sqlx chrono ext to repl String?
 
 const SQLITE_UNIQUE_VIOLATION: &'static str = "2067";
 
@@ -15,6 +15,29 @@ const SQLITE_UNIQUE_VIOLATION: &'static str = "2067";
 // type. this is more ergonomic, but unneeded runtime work?
 // separate higher level composed fns from base layer?
 // TODO don't look up created tracks, just return last_insert_rowid
+// TODO use constant for table names in queries
+
+#[derive(Debug)]
+pub struct Collection {
+    id: RowId,
+    name: String,
+    created: String,
+}
+
+impl Collection {
+    pub async fn create(
+        conn: &mut SqlitePoolConn,
+        name: &str,
+    ) -> Result<RowId, sqlx::Error> {
+        let id = sqlx::query("INSERT INTO collections (name) VALUES (?)")
+            .bind(name)
+            .execute(conn)
+            .await?
+            .last_insert_rowid();
+
+        Ok(id)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Artist {
@@ -172,10 +195,10 @@ pub struct Tag {
 impl Tag {
     pub async fn create(
         conn: &mut SqlitePoolConn,
-        tag_name: &str,
+        name: &str,
     ) -> Result<RowId, sqlx::Error> {
         let id = sqlx::query("INSERT INTO tags (name) VALUES (?)")
-            .bind(tag_name)
+            .bind(name)
             .execute(conn)
             .await?
             .last_insert_rowid();
@@ -428,6 +451,7 @@ impl Track {
 
 pub async fn import_from_parse_result(
     conn: SqlitePoolConn,
+    collection_id: RowId,
     metadata: parse::ParseResult,
 ) -> DetailedTrack {
     let mut conn = conn;
@@ -470,6 +494,7 @@ pub async fn import_from_parse_result(
         &mut conn,
         &metadata.track,
         release.id,
+        collection_id,
         metadata.path.to_str().unwrap(), // TODO
         metadata.channels as RowId,
         metadata.sample_rate as RowId,
