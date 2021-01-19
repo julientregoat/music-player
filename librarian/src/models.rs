@@ -237,10 +237,10 @@ pub struct Track {
     pub name: String,
     pub release_id: RowId,
     pub file_path: String,
-    pub channels: RowId,
-    pub sample_rate: RowId,
-    pub bit_depth: RowId,
-    pub track_num: Option<RowId>,
+    pub channels: i64,
+    pub sample_rate: i64,
+    pub bit_depth: i64,
+    pub track_num: Option<i64>,
     pub created: String,  // TODO parse date
     pub modified: String, // TODO parse date
 }
@@ -259,10 +259,10 @@ pub struct DetailedTrack {
     pub artists: Vec<Artist>,
     pub tags: Vec<Tag>,
     pub file_path: String,
-    pub channels: RowId,
-    pub sample_rate: RowId,
-    pub bit_depth: RowId,
-    pub track_num: Option<RowId>,
+    pub channels: i64,
+    pub sample_rate: i64,
+    pub bit_depth: i64,
+    pub track_num: Option<i64>,
     pub created: String,  // TODO parse date
     pub modified: String, // TODO parse date
 }
@@ -272,19 +272,30 @@ impl Track {
         conn: &mut SqlitePoolConn,
         name: &str,
         release_id: RowId,
+        collection_id: RowId,
         file_path: &str,
-        channels: RowId,
-        sample_rate: RowId,
-        bit_depth: RowId,
-        track_num: Option<RowId>,
+        channels: i64,
+        sample_rate: i64,
+        bit_depth: i64,
+        track_num: Option<i64>,
     ) -> Result<RowId, sqlx::Error> {
         let track_id = sqlx::query(
             "INSERT INTO tracks
-            (name, release_id, file_path, channels, sample_rate, bit_depth, track_num)
+            (
+                name,
+                release_id,
+                collection_id,
+                file_path,
+                channels,
+                sample_rate,
+                bit_depth,
+                track_num
+            )
             VALUES (?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(name)
         .bind(release_id)
+        .bind(collection_id)
         .bind(file_path)
         .bind(channels)
         .bind(sample_rate)
