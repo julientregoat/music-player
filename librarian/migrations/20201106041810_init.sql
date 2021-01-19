@@ -23,6 +23,7 @@ CREATE TABLE artist_releases (
   PRIMARY KEY(artist_id, release_id)
 );
 
+-- could support library config path overrides here
 CREATE TABLE collections (
   id INTEGER PRIMARY KEY NOT NULL,
   name TEXT UNIQUE NOT NULL,
