@@ -50,20 +50,21 @@ impl Artist {
     pub async fn create(
         conn: &mut SqlitePoolConn,
         name: &str,
-    ) -> Result<Self, sqlx::Error> {
-        let id = sqlx::query("INSERT INTO artists (name) VALUES (?);")
+    ) -> Result<RowId, sqlx::Error> {
+        sqlx::query("INSERT INTO artists (name) VALUES (?);")
             .bind(name)
             .execute(conn.borrow_mut())
-            .await?
-            .last_insert_rowid();
+            .await
+            .map(|d| d.last_insert_rowid())
+    }
 
-        sqlx::query_as!(
-            Self,
-            "SELECT id, name, created FROM artists WHERE id = ?;",
-            id
-        )
-        .fetch_one(conn.borrow_mut())
-        .await
+    pub async fn get(
+        conn: &mut SqlitePoolConn,
+        id: RowId,
+    ) -> Result<Self, sqlx::Error> {
+        sqlx::query_as!(Self, "SELECT * FROM artists WHERE id = ?", id)
+            .fetch_one(conn)
+            .await
     }
 
     pub async fn get_by_name(
@@ -108,7 +109,7 @@ impl Release {
         name: &str,
         date: Option<&str>,
         artist_ids: Vec<RowId>,
-    ) -> Result<Self, sqlx::Error> {
+    ) -> Result<RowId, sqlx::Error> {
         let mut conn = conn;
         let release_id = sqlx::query(
             "INSERT INTO releases (name, date)
@@ -124,21 +125,15 @@ impl Release {
             ArtistRelease::create(&mut conn, id, release_id).await?;
         }
 
-        sqlx::query_as!(
-            Self,
-            "SELECT * FROM releases WHERE id = ?;",
-            release_id
-        )
-        .fetch_one(conn.borrow_mut())
-        .await
+        Ok(release_id)
     }
 
-    pub async fn get_by_name(
+    pub async fn get(
         conn: &mut SqlitePoolConn,
-        name: &str,
-    ) -> Result<Vec<Self>, sqlx::Error> {
-        sqlx::query_as!(Self, "SELECT * FROM releases WHERE name = ?", name)
-            .fetch_all(conn)
+        id: RowId,
+    ) -> Result<Self, sqlx::Error> {
+        sqlx::query_as!(Self, "SELECT * FROM releases WHERE id = ?", id)
+            .fetch_one(conn)
             .await
     }
 
@@ -197,13 +192,11 @@ impl Tag {
         conn: &mut SqlitePoolConn,
         name: &str,
     ) -> Result<RowId, sqlx::Error> {
-        let id = sqlx::query("INSERT INTO tags (name) VALUES (?)")
+        sqlx::query("INSERT INTO tags (name) VALUES (?)")
             .bind(name)
             .execute(conn)
-            .await?
-            .last_insert_rowid();
-
-        Ok(id)
+            .await
+            .map(|done| done.last_insert_rowid())
     }
 
     // tags will usually be reused instead of created -> optimize for the read
@@ -533,7 +526,7 @@ pub async fn import_from_parse_result(
     let mut artists = vec![];
     for curr_artist in metadata.artists {
         let new_artist = match Artist::create(&mut conn, &curr_artist).await {
-            Ok(a) => a,
+            Ok(artist_id) => Artist::get(&mut conn, artist_id).await.unwrap(),
             Err(sqlx::Error::Database(d)) => match d.code() {
                 Some(code) if code == SQLITE_UNIQUE_VIOLATION => {
                     Artist::get_by_name(&mut conn, &curr_artist).await.unwrap()
@@ -555,14 +548,18 @@ pub async fn import_from_parse_result(
     let album = metadata.album.as_str();
     let release = match releases.iter().find(|r| r.name == album) {
         Some(r) => r.clone(),
-        None => Release::create(
-            &mut conn,
-            album,
-            metadata.date.as_deref(),
-            artists.iter().map(|a| a.id).collect(),
-        )
-        .await
-        .unwrap(),
+        None => {
+            let release_id = Release::create(
+                &mut conn,
+                album,
+                metadata.date.as_deref(),
+                artists.iter().map(|a| a.id).collect(),
+            )
+            .await
+            .unwrap();
+
+            Release::get(&mut conn, release_id).await.unwrap()
+        }
     };
 
     let track_id = match Track::create(
