@@ -449,6 +449,81 @@ impl Track {
     }
 }
 
+struct PlaylistFolder {
+    id: RowId,
+    name: String,
+    created: String,
+}
+
+impl PlaylistFolder {
+    pub async fn create(
+        conn: &mut SqlitePoolConn,
+        name: &str,
+    ) -> Result<RowId, sqlx::Error> {
+        let id = sqlx::query("INSERT INTO playlist_folders (name) VALUES (?)")
+            .bind(name)
+            .execute(conn)
+            .await?
+            .last_insert_rowid();
+
+        Ok(id)
+    }
+}
+
+struct Playlist {
+    id: RowId,
+    name: String,
+    folder_id: Option<RowId>, // may not have parent folder
+    created: String,
+}
+
+impl Playlist {
+    pub async fn create(
+        conn: &mut SqlitePoolConn,
+        name: &str,
+        folder_id: Option<RowId>,
+    ) -> Result<RowId, sqlx::Error> {
+        let id = sqlx::query(
+            "INSERT INTO playlists (name, folder_id) VALUES (?, ?)",
+        )
+        .bind(name)
+        .bind(folder_id)
+        .execute(conn)
+        .await?
+        .last_insert_rowid();
+
+        Ok(id)
+    }
+
+    pub async fn add_to_folder(
+        conn: &mut SqlitePoolConn,
+        playlist_id: RowId,
+        folder_id: RowId,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE playlists SET folder_id = ? WHERE id = ?")
+            .bind(folder_id)
+            .bind(playlist_id)
+            .execute(conn)
+            .await
+            .map(|_done| ())
+    }
+
+    pub async fn add_track(
+        conn: &mut SqlitePoolConn,
+        playlist_id: RowId,
+        track_id: RowId,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO playlist_tracks (playlist_id, track_id) VALUES (?, ?)",
+        )
+        .bind(playlist_id)
+        .bind(track_id)
+        .execute(conn)
+        .await
+        .map(|_done| ())
+    }
+}
+
 pub async fn import_from_parse_result(
     conn: SqlitePoolConn,
     collection_id: RowId,
