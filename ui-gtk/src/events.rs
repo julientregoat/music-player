@@ -1,14 +1,14 @@
 use crate::{track_list, AppStore};
 use gtk::GtkListStoreExt;
-use librarian::models::DetailedTrack;
+use librarian::models::OwnedTrack;
 use log::{debug, error, trace};
 
 // maybe replace the app event loop with tokio watch channel, broadcasting
 // to the widgets that need to be updated. that would scale better than this
 #[derive(Debug)]
 pub enum AppMsg {
-    Tracklist(Vec<DetailedTrack>),
-    ImportedTracks(Vec<DetailedTrack>),
+    Tracklist(Vec<OwnedTrack>),
+    ImportedTracks(Vec<OwnedTrack>),
 }
 
 pub fn app_event_loop(

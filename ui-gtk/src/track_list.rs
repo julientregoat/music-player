@@ -78,7 +78,7 @@ pub fn build_track_list() -> (ScrolledWindow, TreeView, ListStore) {
     (scroll_container, view, list)
 }
 
-pub fn insert_track(list: &ListStore, track: librarian::models::DetailedTrack) {
+pub fn insert_track(list: &ListStore, track: librarian::models::OwnedTrack) {
     // create a column -> Track property mapping?
     list.insert_with_values(
         None,
@@ -87,6 +87,7 @@ pub fn insert_track(list: &ListStore, track: librarian::models::DetailedTrack) {
             &track.id,
             &track.name,
             &track
+                .release
                 .artists
                 .into_iter()
                 .map(|a| a.name)
