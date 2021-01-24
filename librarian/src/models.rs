@@ -2,7 +2,8 @@
 use super::parse;
 use core::borrow::BorrowMut;
 use sqlx::{pool::PoolConnection, sqlite::Sqlite};
-use std::collections::HashMap;
+use std::collections::{hash_map, HashMap};
+use tokio_stream::StreamExt;
 
 pub type SqlitePoolConn = PoolConnection<Sqlite>;
 pub type RowId = i64;
@@ -13,8 +14,8 @@ const SQLITE_UNIQUE_VIOLATION: &'static str = "2067";
 // TODO refactor exposed API? associated functions doesn't feel ideal
 // sqlx examples show models organized as traits implemented on the Connection
 // type. this is more ergonomic, but unneeded runtime work?
-// separate higher level composed fns from base layer?
-// TODO don't look up created tracks, just return last_insert_rowid
+// maybe the move is to have a dao with the base structure, that returns
+// any of the derived structures? need better naming for derived struct fns
 // TODO use constant for table names in queries
 
 #[derive(Debug)]
@@ -28,10 +29,10 @@ pub struct Collection<'c> {
     id: RowId,
     name: String,
     created: String,
-    artists: Vec<Artist>,
-    releases: Vec<Release<'c>>,
+    artists: HashMap<RowId, Artist>,
+    releases: HashMap<RowId, Release<'c>>,
     tracks: Vec<Track<'c>>,
-    tags: Vec<Tag>,
+    // tags: Vec<Tag>, // TODO
 }
 
 // not sure this should be separate or exposed as is
@@ -51,8 +52,12 @@ impl CollectionBase {
 }
 
 impl<'c> Collection<'c> {
-    pub async fn load() -> Result<Collection<'c>, sqlx::Error> {
+    pub async fn load(
+        conn: &mut SqlitePoolConn,
+    ) -> Result<Collection<'c>, sqlx::Error> {
         // load all artists into memory, then releases, then tracks and link refs
+        let artists = Artist::get_all(conn).await?;
+        let releases = Release::get_all(conn, &artists).await?;
         unimplemented!()
     }
 }
@@ -85,7 +90,22 @@ impl Artist {
             .await
     }
 
-    pub async fn get_by_name(
+    pub async fn get_all(
+        conn: &mut SqlitePoolConn,
+    ) -> Result<HashMap<RowId, Self>, sqlx::Error> {
+        let mut qstream =
+            sqlx::query_as!(Self, "SELECT * FROM artists ORDER BY id ASC")
+                .fetch(conn);
+        let mut artists = HashMap::new();
+
+        while let Some(Ok(a)) = qstream.next().await {
+            artists.insert(a.id, a);
+        }
+
+        Ok(artists)
+    }
+
+    pub async fn find_by_name(
         conn: &mut SqlitePoolConn,
         name: &str,
     ) -> Result<Self, sqlx::Error> {
@@ -129,6 +149,49 @@ pub struct Release<'c> {
     pub created: String, // TODO parse date
 }
 
+impl<'c> Release<'c> {
+    pub async fn get_all(
+        conn: &mut SqlitePoolConn,
+        artists: &'c HashMap<RowId, Artist>,
+    ) -> Result<HashMap<RowId, Release<'c>>, sqlx::Error> {
+        let mut qstream = sqlx::query!(
+            "SELECT
+                releases.id,
+                releases.name,
+                releases.date,
+                releases.created,
+                artist_releases.artist_id
+            FROM releases
+            JOIN artist_releases ON releases.id = artist_releases.release_id
+            ORDER BY releases.id ASC"
+        )
+        .fetch(conn);
+        let mut releases = HashMap::new();
+
+        while let Some(Ok(r)) = qstream.next().await {
+            let artist = artists.get(&r.artist_id).unwrap();
+
+            match releases.entry(r.id) {
+                hash_map::Entry::Vacant(entry) => {
+                    entry.insert(Release {
+                        id: r.id,
+                        name: r.name,
+                        artists: vec![artist],
+                        date: r.date,
+                        created: r.created,
+                    });
+                }
+                hash_map::Entry::Occupied(entry) => {
+                    let release = entry.into_mut();
+                    release.artists.push(artist);
+                }
+            };
+        }
+
+        Ok(releases)
+    }
+}
+
 #[derive(Debug)]
 pub struct OwnedRelease {
     pub id: RowId,
@@ -143,7 +206,7 @@ impl ReleaseBase {
         conn: &mut SqlitePoolConn,
         name: &str,
         date: Option<&str>,
-        artist_ids: Vec<RowId>,
+        artist_ids: &[RowId],
     ) -> Result<RowId, sqlx::Error> {
         let mut conn = conn;
         let release_id = sqlx::query(
@@ -157,7 +220,7 @@ impl ReleaseBase {
         .last_insert_rowid();
 
         for id in artist_ids {
-            ArtistRelease::create(&mut conn, id, release_id).await?;
+            ArtistRelease::create(&mut conn, *id, release_id).await?;
         }
 
         Ok(release_id)
@@ -599,7 +662,7 @@ pub async fn import_parse_result(
             Ok(artist_id) => Artist::get(&mut conn, artist_id).await.unwrap(),
             Err(sqlx::Error::Database(d)) => match d.code() {
                 Some(code) if code == SQLITE_UNIQUE_VIOLATION => {
-                    Artist::get_by_name(&mut conn, &curr_artist).await.unwrap()
+                    Artist::find_by_name(&mut conn, &curr_artist).await.unwrap()
                 }
                 _ => panic!("new artist failed db {:?}", d),
             },
@@ -617,6 +680,7 @@ pub async fn import_parse_result(
             .unwrap();
 
     let album = metadata.album.as_str();
+    let artist_ids: Vec<_> = artists.iter().map(|a| a.id).collect();
     let release = match releases.iter().find(|r| r.name == album) {
         Some(r) => r.clone(),
         None => {
@@ -624,7 +688,7 @@ pub async fn import_parse_result(
                 &mut conn,
                 album,
                 metadata.date.as_deref(),
-                artists.iter().map(|a| a.id).collect(),
+                &artist_ids,
             )
             .await
             .unwrap();

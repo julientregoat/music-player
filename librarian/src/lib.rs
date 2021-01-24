@@ -9,9 +9,9 @@ extern crate log;
 extern crate minimp3;
 // TODO find a way to share or reuse reader from rtag
 extern crate rtag; // TODO use id3
-extern crate serde;
 extern crate serde_derive;
 extern crate sqlx;
+extern crate tokio_stream;
 extern crate toml;
 
 use directories_next::BaseDirs;

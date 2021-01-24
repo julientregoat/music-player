@@ -1,29 +1,28 @@
 [package]
-name = "librarian"
-version = "0.1.0"
 authors = ["Julien Tregoat <jules@jules.nyc>"]
 edition = "2018"
+name = "librarian"
+version = "0.1.0"
 
 [lib]
 name = 'librarian'
 
 [dependencies]
-tokio = {version = "1.0.1", features = ["fs", "sync"]}
-sqlx = {version = "0.4.2", default-features = false, features = ["runtime-tokio-native-tls", "sqlite", "chrono", "macros", "migrate"]}
-claxon = "0.4.3"
-futures = "0.3.8"
-chrono = "0.4"
-hound = "3.4.0"
-rtag = "0.3.5"
-log = "0.4.11"
-minimp3 = "0.5.0" # TODO use tokio async feature?
-aiff = {git = "https://github.com/julientregoat/aiff-rs.git"}
-# cpal = {path = "../../cpal"}
-cpal = {git = "https://github.com/julientregoat/cpal.git", branch = "24bit"}
-# num-traits = "0.2.14"
-directories-next = "2.0.0"
-toml = "0.5.8"
-serde = "1.0.118"
-serde_derive = "1.0.118"
+aiff = {git = "https://github.com/julientregoat/aiff-rs.git"} 
+chrono = "0.4" 
+claxon = "0.4.3" 
+cpal = {git = "https://github.com/julientregoat/cpal.git", branch = "24bit"}# {path = "../../cpal"}   
+directories-next = "2.0.0" 
+futures = "0.3.12" 
+hound = "3.4.0" 
+log = "0.4.13" 
+minimp3 = "0.5.1" # TODO use tokio async feature?
+rtag = "0.3.5" 
+serde = "1.0.121" 
+serde_derive = "1.0.121" 
+sqlx = {version = "0.4.2", default-features = false, features = ["runtime-tokio-native-tls", "sqlite", "chrono", "macros", "migrate"]} 
+tokio = {version = "1.1.0", features = ["fs", "sync"]} 
+tokio-stream = "" 
+toml = "0.5.8" 
 
 [dev-dependencies]
