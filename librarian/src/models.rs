@@ -18,13 +18,24 @@ const SQLITE_UNIQUE_VIOLATION: &'static str = "2067";
 // TODO use constant for table names in queries
 
 #[derive(Debug)]
-pub struct Collection {
+pub struct CollectionBase {
     id: RowId,
     name: String,
     created: String,
 }
 
-impl Collection {
+pub struct Collection<'c> {
+    id: RowId,
+    name: String,
+    created: String,
+    artists: Vec<Artist>,
+    releases: Vec<Release<'c>>,
+    tracks: Vec<Track<'c>>,
+    tags: Vec<Tag>,
+}
+
+// not sure this should be separate or exposed as is
+impl CollectionBase {
     pub async fn create(
         conn: &mut SqlitePoolConn,
         name: &str,
@@ -36,6 +47,13 @@ impl Collection {
             .last_insert_rowid();
 
         Ok(id)
+    }
+}
+
+impl<'c> Collection<'c> {
+    pub async fn load() -> Result<Collection<'c>, sqlx::Error> {
+        // load all artists into memory, then releases, then tracks and link refs
+        unimplemented!()
     }
 }
 
@@ -96,14 +114,31 @@ impl Artist {
 }
 
 #[derive(Clone, Debug, sqlx::FromRow)]
-pub struct Release {
+pub struct ReleaseBase {
     pub id: RowId,
     pub name: String,
     pub date: Option<String>,
     pub created: String, // TODO parse date
 }
+#[derive(Debug)]
+pub struct Release<'c> {
+    pub id: RowId,
+    pub name: String,
+    pub artists: Vec<&'c Artist>,
+    pub date: Option<String>,
+    pub created: String, // TODO parse date
+}
 
-impl Release {
+#[derive(Debug)]
+pub struct OwnedRelease {
+    pub id: RowId,
+    pub name: String,
+    pub artists: Vec<Artist>,
+    pub date: Option<String>,
+    pub created: String, // TODO parse date
+}
+
+impl ReleaseBase {
     pub async fn create(
         conn: &mut SqlitePoolConn,
         name: &str,
@@ -153,6 +188,26 @@ impl Release {
         )
         .fetch_all(conn)
         .await
+    }
+
+    pub fn complete(self, artists: Vec<&Artist>) -> Release {
+        Release {
+            id: self.id,
+            name: self.name,
+            artists,
+            date: self.date,
+            created: self.created,
+        }
+    }
+
+    pub fn complete_owned(self, artists: Vec<Artist>) -> OwnedRelease {
+        OwnedRelease {
+            id: self.id,
+            name: self.name,
+            artists,
+            date: self.date,
+            created: self.created,
+        }
     }
 }
 
@@ -248,10 +303,24 @@ impl TrackTag {
 
 // TODO store track duration
 #[derive(Clone, Debug)]
-pub struct Track {
+pub struct TrackBase {
     pub id: RowId,
     pub name: String,
     pub release_id: RowId,
+    pub file_path: String,
+    pub channels: i64,
+    pub sample_rate: i64,
+    pub bit_depth: i64,
+    pub track_num: Option<i64>,
+    pub created: String,  // TODO parse date
+    pub modified: String, // TODO parse date
+}
+
+pub struct Track<'c> {
+    pub id: RowId,
+    pub name: String,
+    pub release: &'c Release<'c>,
+    pub tags: Vec<&'c Tag>,
     pub file_path: String,
     pub channels: i64,
     pub sample_rate: i64,
@@ -268,11 +337,10 @@ pub struct Track {
 // refs in this struct
 // - stack allocated str (e.g inlinable_string) for performance
 #[derive(Debug)]
-pub struct DetailedTrack {
+pub struct OwnedTrack {
     pub id: RowId,
     pub name: String,
-    pub release: Release,
-    pub artists: Vec<Artist>,
+    pub release: OwnedRelease,
     pub tags: Vec<Tag>,
     pub file_path: String,
     pub channels: i64,
@@ -283,7 +351,7 @@ pub struct DetailedTrack {
     pub modified: String, // TODO parse date
 }
 
-impl Track {
+impl TrackBase {
     pub async fn create(
         conn: &mut SqlitePoolConn,
         name: &str,
@@ -340,28 +408,30 @@ impl Track {
             .fetch_all(conn)
             .await
     }
+}
 
-    // TODO should this be outside the Track impl?
-    pub async fn get_all_detailed(
+impl OwnedTrack {
+    // TODO should this be outside the Track impl? perhaps on Collection
+    pub async fn get_all(
         conn: &mut SqlitePoolConn,
-    ) -> Result<Vec<DetailedTrack>, sqlx::Error> {
+    ) -> Result<Vec<OwnedTrack>, sqlx::Error> {
         let tracks_with_releases = sqlx::query!(
             "SELECT
-                tracks.id,
-                tracks.name,
-                tracks.file_path,
-                tracks.channels,
-                tracks.sample_rate,
-                tracks.bit_depth,
-                tracks.track_num,
-                tracks.created,
-                tracks.modified,
-                releases.id as release_id,
-                releases.name as release_name,
-                releases.date as release_date,
-                releases.created as release_created
-            FROM tracks
-            JOIN releases ON tracks.release_id = releases.id;",
+                    tracks.id,
+                    tracks.name,
+                    tracks.file_path,
+                    tracks.channels,
+                    tracks.sample_rate,
+                    tracks.bit_depth,
+                    tracks.track_num,
+                    tracks.created,
+                    tracks.modified,
+                    releases.id as release_id,
+                    releases.name as release_name,
+                    releases.date as release_date,
+                    releases.created as release_created
+                FROM tracks
+                JOIN releases ON tracks.release_id = releases.id;",
         )
         .fetch_all(conn.borrow_mut())
         .await?;
@@ -369,11 +439,11 @@ impl Track {
         let mut track_tags: HashMap<RowId, Vec<Tag>> = HashMap::new();
         sqlx::query!(
             "SELECT
-                track_tags.track_id,
-                tags.id,
-                tags.name
-            FROM track_tags
-            JOIN tags ON track_tags.tag_id = tags.id"
+                    track_tags.track_id,
+                    tags.id,
+                    tags.name
+                FROM track_tags
+                JOIN tags ON track_tags.tag_id = tags.id"
         )
         .fetch_all(conn.borrow_mut())
         .await?
@@ -389,12 +459,12 @@ impl Track {
         let mut release_artists: HashMap<RowId, Vec<Artist>> = HashMap::new();
         sqlx::query!(
             "SELECT
-                artist_releases.release_id,
-                artists.id,
-                artists.name,
-                artists.created
-            FROM artist_releases
-            JOIN artists ON artist_releases.artist_id = artists.id;"
+                    artist_releases.release_id,
+                    artists.id,
+                    artists.name,
+                    artists.created
+                FROM artist_releases
+                JOIN artists ON artist_releases.artist_id = artists.id;"
         )
         .fetch_all(conn.borrow_mut())
         .await?
@@ -412,19 +482,19 @@ impl Track {
         let mut detailed_tracks = Vec::new();
 
         for track in tracks_with_releases {
-            let dt = DetailedTrack {
+            let dt = OwnedTrack {
                 id: track.id,
                 name: track.name,
-                release: Release {
+                release: OwnedRelease {
                     id: track.release_id,
                     name: track.release_name,
                     date: track.release_date,
                     created: track.release_created,
+                    artists: release_artists
+                        .get(&track.release_id)
+                        .unwrap()
+                        .to_owned(),
                 },
-                artists: release_artists
-                    .get(&track.release_id)
-                    .unwrap()
-                    .to_owned(),
                 // TODO is removing slower than cloning & dropping?
                 tags: track_tags.remove(&track.id).unwrap(),
                 file_path: track.file_path,
@@ -517,11 +587,11 @@ impl Playlist {
     }
 }
 
-pub async fn import_from_parse_result(
+pub async fn import_parse_result(
     conn: SqlitePoolConn,
     collection_id: RowId,
     metadata: parse::ParseResult,
-) -> DetailedTrack {
+) -> OwnedTrack {
     let mut conn = conn;
     let mut artists = vec![];
     for curr_artist in metadata.artists {
@@ -541,15 +611,16 @@ pub async fn import_from_parse_result(
     let primary_artist = &artists[0];
 
     // TODO should this be wrapped around all release creation?
-    let releases = Release::get_artist_releases(&mut conn, primary_artist.id)
-        .await
-        .unwrap();
+    let releases =
+        ReleaseBase::get_artist_releases(&mut conn, primary_artist.id)
+            .await
+            .unwrap();
 
     let album = metadata.album.as_str();
     let release = match releases.iter().find(|r| r.name == album) {
         Some(r) => r.clone(),
         None => {
-            let release_id = Release::create(
+            let release_id = ReleaseBase::create(
                 &mut conn,
                 album,
                 metadata.date.as_deref(),
@@ -558,11 +629,11 @@ pub async fn import_from_parse_result(
             .await
             .unwrap();
 
-            Release::get(&mut conn, release_id).await.unwrap()
+            ReleaseBase::get(&mut conn, release_id).await.unwrap()
         }
     };
 
-    let track_id = match Track::create(
+    let track_id = match TrackBase::create(
         &mut conn,
         &metadata.track,
         release.id,
@@ -587,15 +658,14 @@ pub async fn import_from_parse_result(
     };
 
     // FIXME don't need to return this
-    let t = Track::get(&mut conn, track_id)
+    let t = TrackBase::get(&mut conn, track_id)
         .await
         .expect("Failed to get track after insert");
 
-    DetailedTrack {
+    OwnedTrack {
         id: t.id,
         name: t.name,
-        release,
-        artists,
+        release: release.complete_owned(artists),
         tags: Vec::new(),
         file_path: t.file_path,
         channels: t.channels,

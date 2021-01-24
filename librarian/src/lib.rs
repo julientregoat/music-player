@@ -61,6 +61,8 @@ pub struct Library {
     db_pool: SqlitePool,
     stream: Option<AudioStream>,
     config: UserConfig,
+    // collections: Vec<CollectionBase> // maybe only store raw collection data
+    // current_collection: Collection
 }
 
 impl Library {
@@ -113,7 +115,7 @@ impl Library {
         if is_db_creation {
             // set up default collection
             let mut conn = db_pool.acquire().await.unwrap();
-            models::Collection::create(&mut conn, "Collection")
+            models::CollectionBase::create(&mut conn, "Collection")
                 .await
                 .unwrap();
         }
@@ -130,7 +132,7 @@ impl Library {
         &self,
         import_from: PathBuf,
         target_collection: models::RowId, // maybe optional & set a default?
-    ) -> Vec<models::DetailedTrack> {
+    ) -> Vec<models::OwnedTrack> {
         // TODO try out sync channel buffered to ulimit -n
         let (tx, mut rx) = tokio_mpsc::unbounded_channel();
         let import_thread = std::thread::spawn(move || {
@@ -195,7 +197,7 @@ impl Library {
                                     // update path to show import location
                                     msg.path = track_path;
                                     debug!("importing to db {:?}", msg);
-                                    models::import_from_parse_result(
+                                    models::import_parse_result(
                                         c,
                                         target_collection,
                                         msg,
@@ -211,11 +213,9 @@ impl Library {
             } else {
                 trace!("not copying track on import");
                 noncopies.push(self.db_pool.acquire().then(|res| match res {
-                    Ok(c) => models::import_from_parse_result(
-                        c,
-                        target_collection,
-                        msg,
-                    ),
+                    Ok(c) => {
+                        models::import_parse_result(c, target_collection, msg)
+                    }
                     Err(e) => {
                         panic!("failed to acquire conn {:?}", e);
                     }
@@ -251,15 +251,19 @@ impl Library {
         imported_tracks
     }
 
-    pub async fn get_tracklist(&self) -> Vec<models::DetailedTrack> {
+    pub async fn get_tracklist(&self) -> Vec<models::OwnedTrack> {
         let mut conn = self.db_pool.acquire().await.unwrap();
         // TODO handle failure
-        models::Track::get_all_detailed(&mut conn).await.unwrap()
+        models::OwnedTrack::get_all(&mut conn).await.unwrap()
     }
+
+    // collections should contain artists etc? should it be an object with
+    // all tracks, artists, etc
+    // pub async fn load_collection(&self) -> models::Collection {}
 
     pub async fn play_track(&mut self, track_id: i64) {
         let mut conn = self.db_pool.acquire().await.unwrap();
-        let track = crate::models::Track::get(&mut conn, track_id)
+        let track = crate::models::TrackBase::get(&mut conn, track_id)
             .await
             .unwrap();
 
